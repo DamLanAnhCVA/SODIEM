@@ -635,6 +635,13 @@ function onAuthChanged(user){
     });
     subscribeTeacherDoc(user);
   } else {
+    // Tắt hết các listener đang lắng nghe dữ liệu (học sinh, điểm, điểm danh…)
+    // TRƯỚC khi coi như đã đăng xuất — nếu không, chúng sẽ tiếp tục cố đọc
+    // dữ liệu sau khi mất quyền và bị Firestore Rules từ chối hàng loạt
+    // (permission-denied), gây ra một loạt thông báo lỗi thừa như vừa thấy.
+    detachListeners();
+    if(State.teacherUnsub){ try{ State.teacherUnsub(); }catch(e){} State.teacherUnsub = null; }
+    State.classId = null; State.klass = null; State.teacherDoc = null;
     $('#app').classList.remove('ready');
     renderAuthScreen();
   }
