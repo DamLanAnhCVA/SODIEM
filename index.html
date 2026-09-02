@@ -524,6 +524,26 @@ function toast(msg, kind=''){
   wrap.appendChild(t);
   setTimeout(()=>{ t.style.opacity='0'; t.style.transition='opacity .3s'; setTimeout(()=>t.remove(), 300); }, 2600);
 }
+// Toast có nút "↩️ Hoàn tác" — dùng cho các thao tác xoá: KHÔNG xoá ngay lập tức,
+// chỉ ẩn/khoá tạm trên giao diện rồi đợi `ms` để người dùng kịp bấm Hoàn tác nếu
+// lỡ tay. Hết giờ mà không hoàn tác thì mới thực sự gọi onCommit() (vd: xoá Firestore).
+function toastUndo(msg, onCommit, onUndo, ms=6000){
+  const wrap = $('#toast-wrap');
+  let done = false;
+  const t = el('div', {class:'toast rose', style:'display:flex; align-items:center; gap:10px'},
+    el('span',{}, msg),
+    el('button',{class:'btn btn-ghost btn-sm', style:'padding:4px 10px; white-space:nowrap; flex-shrink:0', onclick:()=>{
+      if(done) return; done = true; clearTimeout(timer);
+      t.style.opacity='0'; t.style.transition='opacity .3s'; setTimeout(()=>t.remove(), 300);
+      if(onUndo) onUndo();
+    }}, '↩️ Hoàn tác'));
+  wrap.appendChild(t);
+  const timer = setTimeout(()=>{
+    if(done) return; done = true;
+    t.style.opacity='0'; t.style.transition='opacity .3s'; setTimeout(()=>t.remove(), 300);
+    if(onCommit) onCommit();
+  }, ms);
+}
 async function copyText(text, okMsg){
   okMsg = okMsg || 'Đã sao chép';
   try{
@@ -605,6 +625,7 @@ const State = {
   teacherUnsub: null,    // unsubscribe riêng cho listener /teachers/{uid} (không tắt khi đổi lớp)
   logbook: [],           // sổ đầu bài của lớp đang chọn (collection classes/{id}/logbook)
   tkbWeekMonday: null,   // ISO "YYYY-MM-DD" (thứ 2) của tuần đang xem/sửa ở "TKB & Kế hoạch dạy"
+  tasks: [],             // phân công nhiệm vụ của GVCN (collection classes/{id}/tasks)
 };
 
 let db = null, auth = null;
@@ -922,6 +943,11 @@ function attachClassListeners(classId){
     State.logbook = snap.docs.map(d=>({id:d.id, ...d.data()}));
     renderAll();
   }, onErr('sổ đầu bài')));
+
+  push(db.collection('classes').doc(classId).collection('tasks').orderBy('date','desc').onSnapshot(snap=>{
+    State.tasks = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    renderAll();
+  }, onErr('phân công nhiệm vụ')));
 }
 
 function openClassCreateJoinModal(){
@@ -1058,6 +1084,7 @@ const NAV = {
     {id:'diem-danh', label:'Điểm danh', icon:'✅'},
     {id:'hanh-kiem', label:'Vi phạm / Tuyên dương', icon:'⚖️'},
     {id:'lien-he', label:'Liên hệ phụ huynh', icon:'💬'},
+    {id:'phan-cong', label:'Phân công nhiệm vụ', icon:'📌'},
     {id:'tong-hop', label:'Tổng hợp GVBM', icon:'📚'},
     {id:'hoc-ba', label:'Nhận xét & Học bạ', icon:'📖'},
   ],
@@ -1288,6 +1315,11 @@ function viewBangDiem(main){
     return;
   }
 
+  // Ô tìm kiếm nhanh theo tên — lọc ngay khi gõ, không phân biệt dấu
+  // (gõ "an" vẫn tìm ra "Ân", "Loan"...) nhờ stripDiacritics().
+  const searchIn = el('input',{class:'input', placeholder:'🔍 Tìm học sinh theo tên…', style:'max-width:280px; margin-bottom:12px'});
+  main.appendChild(searchIn);
+
   const wrap = el('div', {class:'card', style:'overflow-x:auto'});
   const table = el('table', {class:'data-table'});
   const thead = el('thead', {}, el('tr', {},
@@ -1298,7 +1330,20 @@ function viewBangDiem(main){
     el('th',{style:'text-align:center'},'TB môn'), el('th',{})
   ));
   const tbody = el('tbody');
-  State.students.forEach((stu, idx)=>{
+  table.appendChild(thead); table.appendChild(tbody);
+  wrap.appendChild(table);
+  main.appendChild(wrap);
+
+  function renderRows(){
+    tbody.innerHTML = '';
+    const term = stripDiacritics(searchIn.value.trim());
+    const list = term ? State.students.filter(s=> stripDiacritics(s.name).includes(term)) : State.students;
+    if(!list.length){
+      tbody.appendChild(el('tr',{}, el('td',{colspan: txCount+8, class:'muted', style:'text-align:center; padding:16px'}, 'Không tìm thấy học sinh nào phù hợp.')));
+      return;
+    }
+    list.forEach(stu=>{
+    const idx = State.students.indexOf(stu); // số thứ tự giữ theo danh sách gốc, không đổi theo kết quả lọc
     const gb = State.gradebook[gbKey(subj.id, stu.id)] || {tx:[], gk:null, ck:null, cc:null, adj:[]};
     const avg = calcAvg(gb, subj);
     const tr = el('tr', {});
@@ -1337,10 +1382,10 @@ function viewBangDiem(main){
     tr.appendChild(el('td',{style:'text-align:center'}, avg!=null ? el('strong',{class: avg<5?'':'', style:'font-family:var(--font-mono); color:'+(avg<5?'var(--rose)':'var(--teal)')}, avg.toFixed(1)) : el('span',{class:'muted'},'—')));
     tr.appendChild(el('td',{}, el('button',{class:'icon-btn', title:'Nhận xét AI', onclick:()=> openAiCommentModal(stu, {subject:subj, gb, avg})}, '✨')));
     tbody.appendChild(tr);
-  });
-  table.appendChild(thead); table.appendChild(tbody);
-  wrap.appendChild(table);
-  main.appendChild(wrap);
+    });
+  }
+  searchIn.addEventListener('input', renderRows);
+  renderRows();
 }
 
 function adjustTxCount(subj, delta){
@@ -1522,6 +1567,11 @@ function viewHsGvbm(main, {isGvcn}={}){
     bulkBar = el('div', {class:'card card-pad', style:'display:none; align-items:center; gap:10px; margin-bottom:12px; background:var(--rose-tint); border-color:var(--rose)'});
     main.appendChild(bulkBar);
   }
+  // Ô tìm kiếm nhanh theo tên — lọc ngay khi gõ, không phân biệt dấu
+  // (gõ "an" vẫn tìm ra "Ân", "Loan"...) nhờ stripDiacritics().
+  const searchIn = el('input',{class:'input', placeholder:'🔍 Tìm học sinh theo tên…', style:'max-width:280px; margin-bottom:12px'});
+  main.appendChild(searchIn);
+
   const wrap = el('div', {class:'card', style:'overflow-x:auto'});
   const table = el('table', {class:'data-table'});
   const headRow = el('tr',{});
@@ -1540,26 +1590,40 @@ function viewHsGvbm(main, {isGvcn}={}){
   if(canManage) headRow.appendChild(el('th',{},''));
   table.appendChild(el('thead',{}, headRow));
   tbody = el('tbody');
-  State.students.forEach((s,i)=>{
-    const tr = el('tr',{});
-    if(canManage){
-      const cb = el('input',{type:'checkbox', 'data-sid': s.id});
-      cb.addEventListener('change', ()=>{ if(cb.checked) selected.add(s.id); else selected.delete(s.id); refreshBulkBar(); });
-      tr.appendChild(el('td',{}, cb));
-    }
-    tr.appendChild(el('td',{},String(i+1)));
-    tr.appendChild(el('td',{}, el('strong',{},s.name)));
-    tr.appendChild(el('td',{}, fmtDob(s.dob)));
-    tr.appendChild(el('td',{class:'muted'}, s.note||''));
-    if(canManage){
-      tr.appendChild(el('td',{style:'text-align:right; white-space:nowrap'},
-        el('button',{class:'icon-btn', onclick:()=>openStudentModal(s)}, '✏️'),
-        el('button',{class:'icon-btn', onclick:()=>{ if(confirm('Xoá học sinh '+s.name+'?')) db.collection('classes').doc(State.classId).collection('students').doc(s.id).delete(); }}, '🗑️')
-      ));
-    }
-    tbody.appendChild(tr);
-  });
   table.appendChild(tbody); wrap.appendChild(table); main.appendChild(wrap);
+
+  function renderRows(){
+    tbody.innerHTML = '';
+    const term = stripDiacritics(searchIn.value.trim());
+    const list = term ? State.students.filter(s=> stripDiacritics(s.name).includes(term)) : State.students;
+    if(!list.length){
+      tbody.appendChild(el('tr',{}, el('td',{colspan: canManage?6:4, class:'muted', style:'text-align:center; padding:16px'}, 'Không tìm thấy học sinh nào phù hợp.')));
+      return;
+    }
+    list.forEach(s=>{
+      const i = State.students.indexOf(s); // số thứ tự giữ theo danh sách gốc, không đổi theo kết quả lọc
+      const tr = el('tr',{});
+      if(canManage){
+        const cb = el('input',{type:'checkbox', 'data-sid': s.id});
+        cb.checked = selected.has(s.id);
+        cb.addEventListener('change', ()=>{ if(cb.checked) selected.add(s.id); else selected.delete(s.id); refreshBulkBar(); });
+        tr.appendChild(el('td',{}, cb));
+      }
+      tr.appendChild(el('td',{},String(i+1)));
+      tr.appendChild(el('td',{}, el('strong',{},s.name)));
+      tr.appendChild(el('td',{}, fmtDob(s.dob)));
+      tr.appendChild(el('td',{class:'muted'}, s.note||''));
+      if(canManage){
+        tr.appendChild(el('td',{style:'text-align:right; white-space:nowrap'},
+          el('button',{class:'icon-btn', onclick:()=>openStudentModal(s)}, '✏️'),
+          el('button',{class:'icon-btn', onclick:()=>{ if(confirm('Xoá học sinh '+s.name+'?')) db.collection('classes').doc(State.classId).collection('students').doc(s.id).delete(); }}, '🗑️')
+        ));
+      }
+      tbody.appendChild(tr);
+    });
+  }
+  searchIn.addEventListener('input', renderRows);
+  renderRows();
 }
 
 function viewBaoCaoGvbm(main){
@@ -2893,7 +2957,26 @@ function openRandomGroupsModal(){
   wrap.appendChild(el('p',{class:'muted', style:'font-size:12px; margin:-4px 0 14px'},
     `Lớp hiện có ${State.students.length} học sinh — mặc định lấy cả lớp, có thể sửa số nếu chỉ muốn chia một phần.`));
 
+  const rolesCb = el('input',{type:'checkbox', checked:true});
+  const rolesIn = el('input',{class:'input', value:'Nhóm trưởng, Nhóm phó, Thư ký', placeholder:'Các vai trò, cách nhau bởi dấu phẩy'});
+  wrap.appendChild(el('label',{style:'display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:6px'}, rolesCb, el('span',{},'Gán vai trò ngẫu nhiên trong mỗi nhóm')));
+  wrap.appendChild(el('div',{class:'field', style:'margin-bottom:14px'}, rolesIn));
+
   const resultWrap = el('div', {style:'margin-top:2px'});
+
+  // Bốc ngẫu nhiên n người "báo cáo" TỪ 1 nhóm cụ thể đã chia sẵn (không random lại cả nhóm).
+  function buildReportPicker(bucket, resultRow){
+    const countIn = el('input',{class:'input', type:'number', min:1, max:bucket.length, value:1, style:'width:56px; padding:6px 8px'});
+    const pickBtn = el('button',{class:'btn btn-ghost btn-sm', onclick:()=>{
+      const n = Math.max(1, Math.min(bucket.length, parseInt(countIn.value)||1));
+      const picked = [...bucket].sort(()=> Math.random()-0.5).slice(0, n);
+      resultRow.innerHTML = '';
+      resultRow.appendChild(el('span',{style:'font-size:12.5px'}, '🎤 Báo cáo: '));
+      picked.forEach(s=> resultRow.appendChild(el('span',{class:'badge badge-teal', style:'margin-right:4px'}, s.name)));
+    }}, '🎲 Bốc');
+    return el('div',{style:'display:flex; align-items:center; gap:6px; margin-top:10px; flex-wrap:wrap'},
+      el('span',{class:'muted', style:'font-size:12px'},'Số người báo cáo:'), countIn, pickBtn, resultRow);
+  }
 
   function doSplit(){
     const total = Math.max(2, Math.min(State.students.length, parseInt(totalIn.value)||State.students.length));
@@ -2901,12 +2984,25 @@ function openRandomGroupsModal(){
     const pool = [...State.students].sort(()=> Math.random()-0.5).slice(0, total);
     const buckets = Array.from({length:groups}, ()=>[]);
     pool.forEach((s,i)=> buckets[i%groups].push(s));
+    const roleNames = rolesCb.checked ? rolesIn.value.split(',').map(r=>r.trim()).filter(Boolean) : [];
     resultWrap.innerHTML = '';
     const grid = el('div', {class:'grid-2'});
     buckets.forEach((bucket,i)=>{
       const card = el('div',{class:'card card-pad'});
       card.appendChild(el('div',{class:'section-title', style:'margin-bottom:8px'}, `Nhóm ${i+1} (${bucket.length} HS)`));
-      bucket.forEach(s=> card.appendChild(el('div',{style:'font-size:13px; padding:3px 0'}, '• '+s.name)));
+      if(roleNames.length){
+        // Xáo trong nhóm rồi gán lần lượt từng vai trò cho từng bạn, phần còn lại là "Thành viên".
+        const shuffled = [...bucket].sort(()=> Math.random()-0.5);
+        shuffled.forEach((s,idx)=>{
+          const role = roleNames[idx] || 'Thành viên';
+          card.appendChild(el('div',{style:'font-size:13px; padding:3px 0; display:flex; justify-content:space-between; gap:8px'},
+            el('span',{}, '• '+s.name), el('span',{class:'muted', style:'font-size:11.5px'}, role)));
+        });
+      } else {
+        bucket.forEach(s=> card.appendChild(el('div',{style:'font-size:13px; padding:3px 0'}, '• '+s.name)));
+      }
+      const resultRow = el('div',{});
+      card.appendChild(buildReportPicker(bucket, resultRow));
       grid.appendChild(card);
     });
     resultWrap.appendChild(grid);
@@ -2954,11 +3050,28 @@ function viewDiemDanh(main, {isGvcn}){
     el('input', {class:'input', type:'date', value:date, style:'width:auto', onchange:(e)=>{ State.attDate=e.target.value; renderMain(); }}),
   ]);
   const rec = (State.attendance[date]||{}).records || {};
+
+  // Ô tìm kiếm nhanh theo tên — lọc ngay khi gõ, không phân biệt dấu
+  // (gõ "an" vẫn tìm ra "Ân", "Loan"...) nhờ stripDiacritics().
+  const searchIn = el('input',{class:'input', placeholder:'🔍 Tìm học sinh theo tên…', style:'max-width:280px; margin-bottom:12px'});
+  main.appendChild(searchIn);
+
   const wrap = el('div', {class:'card', style:'overflow-x:auto'});
   const table = el('table', {class:'data-table'});
   table.appendChild(el('thead',{}, el('tr',{}, el('th',{},'#'), el('th',{},'Học sinh'), el('th',{style:'text-align:center'},'Trạng thái'), el('th',{},'Ghi chú'), isGvcn?el('th',{style:'text-align:center'},'Báo PH'):null)));
   const tbody = el('tbody');
-  State.students.forEach((s,i)=>{
+  table.appendChild(tbody); wrap.appendChild(table); main.appendChild(wrap);
+
+  function renderRows(){
+    tbody.innerHTML = '';
+    const term = stripDiacritics(searchIn.value.trim());
+    const list = term ? State.students.filter(s=> stripDiacritics(s.name).includes(term)) : State.students;
+    if(!list.length){
+      tbody.appendChild(el('tr',{}, el('td',{colspan: isGvcn?5:4, class:'muted', style:'text-align:center; padding:16px'}, 'Không tìm thấy học sinh nào phù hợp.')));
+      return;
+    }
+    list.forEach(s=>{
+    const i = State.students.indexOf(s); // số thứ tự giữ theo danh sách gốc, không đổi theo kết quả lọc
     const raw = rec[s.id];
     const cur = attStatusOf(raw);
     const curNote = attNoteOf(raw);
@@ -2975,8 +3088,10 @@ function viewDiemDanh(main, {isGvcn}){
     sel.addEventListener('change', ()=> updateAttRecord(date, s.id, {status: sel.value}));
     noteIn.addEventListener('change', ()=> updateAttRecord(date, s.id, {note: noteIn.value.trim()}));
     tbody.appendChild(el('tr',{}, el('td',{},String(i+1)), el('td',{}, el('strong',{},s.name)), el('td',{style:'text-align:center'}, sel), el('td',{}, noteIn), notifyBtn?el('td',{style:'text-align:center'}, notifyBtn):null));
-  });
-  table.appendChild(tbody); wrap.appendChild(table); main.appendChild(wrap);
+    });
+  }
+  searchIn.addEventListener('input', renderRows);
+  renderRows();
 
   if(isGvcn){
     const bar = el('div', {style:'display:flex; gap:8px; margin-top:14px; flex-wrap:wrap'},
@@ -3998,6 +4113,378 @@ function viewHocBa(main, {isGvcn}){
 /* ==========================================================================
    14. VIEW REGISTRY
    ========================================================================== */
+/* ==========================================================================
+   14b. GVCN — PHÂN CÔNG NHIỆM VỤ
+   ========================================================================== */
+const TASK_STATUS = {
+  todo:  {label:'Chưa làm',   cls:'badge-rose'},
+  doing: {label:'Đang làm',   cls:'badge-amber'},
+  done:  {label:'Hoàn thành', cls:'badge-sage'},
+  late:  {label:'Trễ hạn',    cls:'badge-rose'},
+};
+function taskStatusOf(item){
+  // Tự động coi là "Trễ hạn" nếu còn hạn nhưng đã qua ngày mà chưa Hoàn thành,
+  // trừ khi người dùng đã tự đặt trạng thái Hoàn thành.
+  if(item.status==='done') return 'done';
+  if(item.deadline && item.deadline < todayStr() && item.status!=='done') return 'late';
+  return item.status || 'todo';
+}
+// Bộ chọn nhiều học sinh (ô tìm + tick chọn + tick tất cả), dùng chung cho modal nhiệm vụ.
+function buildMemberPicker(selectedIds, selectedRoles){
+  const selected = new Map(); // studentId -> vai trò (chuỗi, có thể rỗng)
+  (selectedIds||[]).forEach(id=> selected.set(id, (selectedRoles && selectedRoles[id]) || ''));
+  const searchIn = el('input',{class:'input', placeholder:'🔎 Tìm học sinh…', style:'margin-bottom:8px'});
+  const selectAllCb = el('input',{type:'checkbox'});
+  const list = el('div',{style:'max-height:260px; overflow-y:auto; border:1px solid var(--line); border-radius:10px; padding:8px'});
+  function renderList(){
+    list.innerHTML = '';
+    const q = searchIn.value.trim().toLowerCase();
+    const visible = State.students.filter(s=> !q || (s.name||'').toLowerCase().includes(q));
+    if(!visible.length){ list.appendChild(el('div',{class:'muted', style:'font-size:12.5px; padding:6px'}, 'Không tìm thấy học sinh nào.')); return; }
+    visible.forEach(s=>{
+      const isChecked = selected.has(s.id);
+      const cb = el('input',{type:'checkbox'});
+      cb.checked = isChecked;
+      const roleIn = el('input',{class:'input', placeholder:'Vai trò (VD: Nhóm trưởng)', style:'width:150px; padding:4px 8px; font-size:12px; display:'+(isChecked?'inline-block':'none'), value: selected.get(s.id)||''});
+      cb.addEventListener('change', ()=>{
+        if(cb.checked){ selected.set(s.id, roleIn.value||''); roleIn.style.display='inline-block'; }
+        else { selected.delete(s.id); roleIn.style.display='none'; }
+      });
+      roleIn.addEventListener('input', ()=>{ if(selected.has(s.id)) selected.set(s.id, roleIn.value); });
+      const row = el('div',{style:'display:flex; align-items:center; gap:8px; padding:5px 2px; font-size:13.5px'},
+        el('label',{style:'display:flex; align-items:center; gap:8px; cursor:pointer; flex:1; min-width:0'}, cb, el('span',{},s.name)),
+        roleIn);
+      list.appendChild(row);
+    });
+  }
+  searchIn.addEventListener('input', renderList);
+  selectAllCb.addEventListener('change', ()=>{
+    State.students.forEach(s=>{ if(selectAllCb.checked){ if(!selected.has(s.id)) selected.set(s.id,''); } else selected.delete(s.id); });
+    renderList();
+  });
+  renderList();
+  const wrap = el('div',{},
+    searchIn,
+    el('label',{style:'display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:6px'}, selectAllCb, el('span',{},'Chọn tất cả học sinh trong lớp')),
+    el('p',{class:'muted', style:'font-size:11.5px; margin:-2px 0 8px'}, 'Tick chọn thành viên tham gia, có thể điền vai trò riêng (VD: Nhóm trưởng, Nhóm phó, Thư ký) để hiển thị nổi bật khi xuất PDF.'),
+    list);
+  return {
+    wrap,
+    getSelected: ()=> Array.from(selected.keys()),
+    getRoles: ()=> Object.fromEntries(Array.from(selected.entries()).filter(([,r])=> r && r.trim())),
+  };
+}
+// Nhãn rút gọn cho nút "Thành viên" trong ô bảng (tối đa 2 tên rồi +N).
+function memberShortLabel(ids){
+  ids = ids||[];
+  if(!ids.length) return '+ Chọn thành viên';
+  const names = ids.map(id=> State.students.find(s=>s.id===id)).filter(Boolean).map(s=>s.name);
+  if(!names.length) return '+ Chọn thành viên';
+  if(names.length<=2) return '👥 '+names.join(', ');
+  return `👥 ${names[0]}, ${names[1]} +${names.length-2}`;
+}
+function closeTaskMemberPopover(){
+  if(_taskPopEl){ _taskPopEl.remove(); _taskPopEl=null; }
+  if(_taskPopOutsideHandler){ document.removeEventListener('mousedown', _taskPopOutsideHandler, true); _taskPopOutsideHandler=null; }
+  document.removeEventListener('keydown', _taskPopEscHandler, true);
+}
+function _taskPopEscHandler(e){ if(e.key==='Escape') closeTaskMemberPopover(); }
+let _taskPopEl=null, _taskPopOutsideHandler=null;
+// Popover tích chọn nhanh thành viên, neo cạnh nút bấm trong ô bảng — không cần mở modal.
+// onSave(ids, roles) được gọi khi đóng popover (bấm "Xong", click ra ngoài, hoặc Esc).
+function openTaskMemberPopover(anchorEl, initialIds, initialRoles, onSave){
+  closeTaskMemberPopover();
+  const picker = buildMemberPicker(initialIds||[], initialRoles||{});
+  const pop = el('div',{class:'score-popover', style:'width:280px'});
+  pop.appendChild(el('div',{style:'font-weight:700; font-size:12.5px; margin-bottom:6px'}, '👥 Thành viên tham gia'));
+  pop.appendChild(picker.wrap);
+  const doneBtn = el('button',{class:'btn btn-primary btn-sm', style:'width:100%; margin-top:8px'}, 'Xong');
+  let saved = false;
+  const commit = ()=>{ if(saved) return; saved = true; onSave(picker.getSelected(), picker.getRoles()); };
+  doneBtn.addEventListener('click', ()=>{ commit(); closeTaskMemberPopover(); });
+  pop.appendChild(doneBtn);
+  document.body.appendChild(pop);
+  const r = anchorEl.getBoundingClientRect();
+  const popW = 280;
+  let left = Math.min(Math.max(8, r.left), window.innerWidth - popW - 8);
+  pop.style.left = left+'px';
+  pop.style.top = (r.bottom + 6)+'px';
+  requestAnimationFrame(()=>{
+    const ph = pop.getBoundingClientRect().height;
+    if(r.bottom + 6 + ph > window.innerHeight - 8) pop.style.top = Math.max(8, r.top - ph - 6)+'px';
+  });
+  _taskPopEl = pop;
+  _taskPopOutsideHandler = (e)=>{ if(!pop.contains(e.target) && e.target!==anchorEl){ commit(); closeTaskMemberPopover(); } };
+  document.addEventListener('mousedown', _taskPopOutsideHandler, true);
+  document.addEventListener('keydown', _taskPopEscHandler, true);
+}
+// Một dòng nhiệm vụ đã có sẵn: GVCN sửa trực tiếp trên ô bảng (không cần modal),
+// các vai trò khác chỉ xem (giữ nguyên hiển thị dạng text như trước).
+function buildTaskRow(item, idx, isGvcn, tint, color){
+  const numBadge = el('span',{style:`display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:${tint}; color:${color}; font-weight:800; font-size:12px; flex-shrink:0`}, String(idx+1));
+  const tr = el('tr',{style:`background:${tint}`, 'data-task-id': item.id}, el('td',{style:'text-align:center'}, numBadge));
+
+  if(!isGvcn){
+    const members = (item.memberIds||[]).map(id=> State.students.find(s=>s.id===id)).filter(Boolean);
+    const roles = item.memberRoles||{};
+    const memberLabel = members.length ? members.map(m=> roles[m.id] ? `${m.name} (${roles[m.id]})` : m.name).join(', ') : '—';
+    const st = TASK_STATUS[taskStatusOf(item)] || TASK_STATUS.todo;
+    tr.appendChild(el('td',{}, fmtDate(new Date(item.date).getTime())));
+    tr.appendChild(el('td',{}, item.deadline ? fmtDate(new Date(item.deadline).getTime()) : '—'));
+    tr.appendChild(el('td',{}, el('strong',{style:`color:${color}`}, item.event||'—')));
+    tr.appendChild(el('td',{}, item.task||'—'));
+    tr.appendChild(el('td',{style:'max-width:220px; white-space:normal'}, memberLabel));
+    tr.appendChild(el('td',{style:'text-align:center'}, el('span',{class:'badge '+st.cls}, st.label)));
+    tr.appendChild(el('td',{style:'max-width:200px; white-space:normal'}, item.result||'—'));
+    return tr;
+  }
+
+  const patch = (fields)=> db.collection('classes').doc(State.classId).collection('tasks').doc(item.id).update({...fields, updatedAt:Date.now()})
+    .catch(e=> toast('Lỗi lưu: '+e.message, 'rose'));
+
+  const dateIn = el('input',{class:'input', type:'date', style:'min-width:132px', value: new Date(item.date).toISOString().slice(0,10)});
+  dateIn.addEventListener('change', ()=>{ if(dateIn.value) patch({date: new Date(dateIn.value).getTime()}); });
+  tr.appendChild(el('td',{}, dateIn));
+
+  const deadlineIn = el('input',{class:'input', type:'date', style:'min-width:132px', value: item.deadline||''});
+  deadlineIn.addEventListener('change', ()=> patch({deadline: deadlineIn.value || null}));
+  tr.appendChild(el('td',{}, deadlineIn));
+
+  const eventIn = el('input',{class:'input task-cell-event', style:'min-width:150px', placeholder:'VD: Hội trại 26/3…', value: item.event||''});
+  eventIn.addEventListener('change', ()=> patch({event: eventIn.value.trim()}));
+  tr.appendChild(el('td',{}, eventIn));
+
+  const taskIn = el('input',{class:'input', style:'min-width:170px', placeholder:'Nội dung nhiệm vụ', value: item.task||''});
+  taskIn.addEventListener('change', ()=> patch({task: taskIn.value.trim()}));
+  tr.appendChild(el('td',{}, taskIn));
+
+  const memberBtn = el('button',{class:'btn btn-ghost btn-sm', style:'width:100%; min-width:140px; justify-content:flex-start; overflow:hidden; text-overflow:ellipsis; white-space:nowrap'}, memberShortLabel(item.memberIds));
+  memberBtn.addEventListener('click', ()=> openTaskMemberPopover(memberBtn, item.memberIds||[], item.memberRoles||{}, (ids, roles)=> patch({memberIds: ids, memberRoles: roles})));
+  tr.appendChild(el('td',{}, memberBtn));
+
+  const statusSel = el('select',{class:'input', style:'min-width:112px'});
+  Object.entries(TASK_STATUS).forEach(([k,v])=> statusSel.appendChild(el('option',{value:k}, v.label)));
+  statusSel.value = item.status || 'todo';
+  statusSel.addEventListener('change', ()=> patch({status: statusSel.value}));
+  tr.appendChild(el('td',{}, statusSel));
+
+  const resultIn = el('input',{class:'input', style:'min-width:150px', placeholder:'Kết quả (tuỳ chọn)', value: item.result||''});
+  resultIn.addEventListener('change', ()=> patch({result: resultIn.value.trim()}));
+  tr.appendChild(el('td',{}, resultIn));
+
+  // Không còn icon riêng trên từng dòng nữa — thao tác In/Sửa/Xoá gộp chung
+  // vào ô chọn nhiệm vụ ở đầu trang (xem viewPhanCong). Ô trống này chỉ để
+  // giữ đúng số cột với dòng "+ Thêm" bên dưới.
+  tr.appendChild(el('td',{}));
+  return tr;
+}
+// Cuộn tới và làm nổi bật một dòng nhiệm vụ trong bảng, đồng thời focus vào ô
+// "Sự kiện" để GVCN gõ sửa ngay — dùng cho nút "✏️ Sửa" cạnh ô chọn nhiệm vụ.
+function focusTaskRow(taskId){
+  const tr = document.querySelector('tr[data-task-id="'+CSS.escape(taskId)+'"]');
+  if(!tr) return;
+  tr.scrollIntoView({behavior:'smooth', block:'center'});
+  const prevBg = tr.style.background;
+  tr.style.transition = 'background .25s';
+  tr.style.background = 'var(--amber-tint)';
+  setTimeout(()=>{ tr.style.background = prevBg; }, 1100);
+  const inp = tr.querySelector('.task-cell-event');
+  if(inp) inp.focus();
+}
+let _pendingTaskDeleteId = null;
+// Xoá có Hoàn tác: khoá tạm dòng trên giao diện + hiện toast 6 giây, chỉ thực sự
+// xoá trên Firestore nếu hết giờ mà không bấm Hoàn tác.
+function requestDeleteTask(item){
+  if(_pendingTaskDeleteId === item.id) return;
+  const tr = document.querySelector('tr[data-task-id="'+CSS.escape(item.id)+'"]');
+  if(tr){ tr.style.opacity='0.35'; tr.style.pointerEvents='none'; }
+  _pendingTaskDeleteId = item.id;
+  toastUndo('Đã xoá nhiệm vụ "'+(item.event||item.task||'')+'"',
+    ()=>{
+      if(_pendingTaskDeleteId===item.id){
+        db.collection('classes').doc(State.classId).collection('tasks').doc(item.id).delete()
+          .catch(e=> toast('Lỗi xoá: '+e.message, 'rose'));
+        _pendingTaskDeleteId = null;
+      }
+    },
+    ()=>{
+      _pendingTaskDeleteId = null;
+      if(tr){ tr.style.opacity=''; tr.style.pointerEvents=''; }
+    }
+  );
+}
+// Dòng cuối bảng luôn để trống cho GVCN gõ trực tiếp — bấm "+ Thêm" (hoặc Enter ở
+// ô Sự kiện/Nhiệm vụ) để lưu; bảng tự làm mới dòng nhập sau khi lưu thành công.
+function buildTaskAddRow(){
+  let draftIds = [], draftRoles = {};
+  const tr = el('tr',{style:'background:var(--paper-2)'},
+    el('td',{style:'text-align:center'}, el('span',{class:'muted', style:'font-weight:800; font-size:15px'}, '+')));
+
+  const dateIn = el('input',{class:'input', type:'date', style:'min-width:132px', value: todayStr()});
+  tr.appendChild(el('td',{}, dateIn));
+
+  const deadlineIn = el('input',{class:'input', type:'date', style:'min-width:132px'});
+  tr.appendChild(el('td',{}, deadlineIn));
+
+  const eventIn = el('input',{class:'input', style:'min-width:150px', placeholder:'VD: Hội trại 26/3…'});
+  tr.appendChild(el('td',{}, eventIn));
+
+  const taskIn = el('input',{class:'input', style:'min-width:170px', placeholder:'Nội dung nhiệm vụ'});
+  tr.appendChild(el('td',{}, taskIn));
+
+  const memberBtn = el('button',{class:'btn btn-ghost btn-sm', style:'width:100%; min-width:140px; justify-content:flex-start; overflow:hidden; text-overflow:ellipsis; white-space:nowrap'}, memberShortLabel(draftIds));
+  memberBtn.addEventListener('click', ()=> openTaskMemberPopover(memberBtn, draftIds, draftRoles, (ids, roles)=>{
+    draftIds = ids; draftRoles = roles;
+    memberBtn.textContent = memberShortLabel(draftIds);
+  }));
+  tr.appendChild(el('td',{}, memberBtn));
+
+  const statusSel = el('select',{class:'input', style:'min-width:112px'});
+  Object.entries(TASK_STATUS).forEach(([k,v])=> statusSel.appendChild(el('option',{value:k}, v.label)));
+  tr.appendChild(el('td',{}, statusSel));
+
+  const resultIn = el('input',{class:'input', style:'min-width:150px', placeholder:'Kết quả (tuỳ chọn)'});
+  tr.appendChild(el('td',{}, resultIn));
+
+  const saveRow = async ()=>{
+    if(!eventIn.value.trim() && !taskIn.value.trim()){ toast('Nhập ít nhất Sự kiện hoặc Nhiệm vụ', 'rose'); return; }
+    saveBtn.disabled = true;
+    try{
+      await db.collection('classes').doc(State.classId).collection('tasks').add({
+        date: dateIn.value ? new Date(dateIn.value).getTime() : Date.now(),
+        deadline: deadlineIn.value || null,
+        event: eventIn.value.trim(),
+        task: taskIn.value.trim(),
+        memberIds: draftIds,
+        memberRoles: draftRoles,
+        status: statusSel.value || 'todo',
+        result: resultIn.value.trim(),
+        createdAt: Date.now(), updatedAt: Date.now(), createdByUid: State.user.uid,
+      });
+      toast('Đã thêm nhiệm vụ', 'sage');
+      // Bảng sẽ tự vẽ lại dòng nhập trống mới khi Firestore đồng bộ về (onSnapshot → renderAll()).
+    }catch(e){ toast('Lỗi thêm nhiệm vụ: '+e.message, 'rose'); saveBtn.disabled = false; }
+  };
+  [eventIn, taskIn].forEach(inp=> inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); saveRow(); } }));
+  const saveBtn = el('button',{class:'btn btn-primary btn-sm', onclick: saveRow}, '+ Thêm');
+  tr.appendChild(el('td',{style:'text-align:right; white-space:nowrap'}, saveBtn));
+  return tr;
+}
+function viewPhanCong(main, {isGvcn}){
+  // Ô chọn nhiệm vụ + nút xuất PDF — thay cho phải bấm icon 🖨️ trên từng dòng.
+  const exportSel = el('select',{class:'input', style:'width:auto; max-width:220px'});
+  State.tasks.forEach(item=>{
+    let label = (item.event || item.task || 'Nhiệm vụ') + ' — ' + fmtDate(new Date(item.date).getTime());
+    if(label.length>44) label = label.slice(0,44)+'…';
+    exportSel.appendChild(el('option',{value:item.id}, label));
+  });
+  const actions = [];
+  if(State.tasks.length){
+    actions.push(exportSel);
+    actions.push(el('button',{class:'btn btn-ghost btn-sm', title:'In / xuất PDF nhiệm vụ đang chọn', onclick:()=>{
+      const item = State.tasks.find(t=>t.id===exportSel.value);
+      if(item) exportTaskPdf(item); else toast('Chọn nhiệm vụ cần xuất', 'rose');
+    }}, '🖨️ In'));
+    if(isGvcn){
+      actions.push(el('button',{class:'btn btn-ghost btn-sm', title:'Cuộn tới dòng để sửa', onclick:()=>{
+        const item = State.tasks.find(t=>t.id===exportSel.value);
+        if(!item){ toast('Chọn nhiệm vụ cần sửa', 'rose'); return; }
+        focusTaskRow(item.id);
+      }}, '✏️ Sửa'));
+      actions.push(el('button',{class:'btn btn-ghost btn-sm', style:'color:var(--rose)', title:'Xoá nhiệm vụ đang chọn', onclick:()=>{
+        const item = State.tasks.find(t=>t.id===exportSel.value);
+        if(!item){ toast('Chọn nhiệm vụ cần xoá', 'rose'); return; }
+        requestDeleteTask(item);
+      }}, '🗑️ Xoá'));
+      actions.push(el('button',{class:'btn btn-ghost btn-sm', onclick: exportAllTasks}, '⬇️ Xuất tất cả (Excel)'));
+    }
+  }
+  pageHeader(main, 'Phân công nhiệm vụ', 'Theo dõi công việc, sự kiện đã giao cho từng nhóm/học sinh', actions);
+
+  if(!State.tasks.length && !isGvcn){
+    main.appendChild(el('div',{class:'empty-state'}, 'Chưa có nhiệm vụ nào được phân công.'));
+    return;
+  }
+  const wrap = el('div',{class:'card', style:'overflow-x:auto'});
+  const table = el('table',{class:'data-table'});
+  table.appendChild(el('thead',{}, el('tr',{},
+    el('th',{style:'text-align:center; width:40px'},'#'), el('th',{},'Ngày PC'), el('th',{},'Hạn'),
+    el('th',{},'Sự kiện'), el('th',{},'Nhiệm vụ'), el('th',{},'Thành viên'),
+    el('th',{style:'text-align:center'},'Trạng thái'), el('th',{},'Kết quả'), isGvcn?el('th',{},''):null)));
+  const tbody = el('tbody');
+  // Bảng màu xen kẽ theo từng nhiệm vụ để dễ theo dõi bằng mắt khi danh sách dài.
+  const ROW_TINTS = ['var(--teal-tint)', 'var(--amber-tint)', 'var(--sage-tint)', 'var(--rose-tint)'];
+  const ROW_COLORS = ['var(--teal-dark)', 'var(--amber-dark)', 'var(--sage)', 'var(--rose)'];
+  State.tasks.forEach((item,idx)=>{
+    tbody.appendChild(buildTaskRow(item, idx, isGvcn, ROW_TINTS[idx % ROW_TINTS.length], ROW_COLORS[idx % ROW_COLORS.length]));
+  });
+  if(isGvcn) tbody.appendChild(buildTaskAddRow());
+  table.appendChild(tbody); wrap.appendChild(table); main.appendChild(wrap);
+}
+function taskReportRows(item){
+  const members = (item.memberIds||[]).map(id=> State.students.find(s=>s.id===id)).filter(Boolean);
+  const roles = item.memberRoles||{};
+  const st = TASK_STATUS[taskStatusOf(item)] || TASK_STATUS.todo;
+  return [
+    ['Ngày phân công', fmtDate(new Date(item.date).getTime())],
+    ['Sự kiện', item.event||''],
+    ['Nhiệm vụ', item.task||''],
+    ['Hạn hoàn thành', item.deadline ? fmtDate(new Date(item.deadline).getTime()) : ''],
+    ['Trạng thái', st.label],
+    ['Thành viên tham gia', members.map(m=> roles[m.id] ? `${m.name} (${roles[m.id]})` : m.name).join(', ') || ''],
+    ['Kết quả thực hiện', item.result||''],
+  ];
+}
+// Màu chữ nổi bật cho vai trò trưởng/phó khi in PDF gửi nhóm.
+function roleColorStyle(role){
+  const r = (role||'').toLowerCase();
+  if(r.includes('trưởng')) return 'color:#1B7A6E; font-weight:700;'; // teal đậm
+  if(r.includes('phó'))    return 'color:#B5762B; font-weight:700;'; // amber đậm
+  if(role) return 'color:#4A5568; font-weight:600;';
+  return '';
+}
+function exportTaskPdf(item){
+  const members = (item.memberIds||[]).map(id=> State.students.find(s=>s.id===id)).filter(Boolean);
+  const roles = item.memberRoles||{};
+  const st = TASK_STATUS[taskStatusOf(item)] || TASK_STATUS.todo;
+  const rowsHtml = members.length ? members.map((m,i)=>{
+    const role = roles[m.id]||'';
+    return `<tr><td>${i+1}</td><td style="text-align:left">${escapeHtml(m.name)}</td><td style="text-align:left; ${roleColorStyle(role)}">${escapeHtml(role||'Thành viên')}</td></tr>`;
+  }).join('') : `<tr><td colspan="3">Chưa có thành viên nào được phân công</td></tr>`;
+  const title = item.event || item.task || 'Nhiệm vụ';
+  openPrintWindow(title, `
+    <h2>${escapeHtml(title)}</h2>
+    <p>Lớp: ${escapeHtml(State.klass.name)} — Ngày phân công: ${fmtDate(new Date(item.date).getTime())}${item.deadline ? ' — Hạn hoàn thành: '+fmtDate(new Date(item.deadline).getTime()) : ''} — Trạng thái: ${escapeHtml(st.label)}</p>
+    ${item.task ? `<p><strong>Nhiệm vụ:</strong> ${escapeHtml(item.task).replace(/\n/g,'<br>')}</p>` : ''}
+    <table><thead><tr><th>#</th><th style="text-align:left">Họ tên</th><th style="text-align:left">Vai trò</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+    ${item.result ? `<p style="margin-top:16px"><strong>Kết quả thực hiện:</strong> ${escapeHtml(item.result).replace(/\n/g,'<br>')}</p>` : ''}
+  `);
+}
+function exportTaskRow(item){
+  const ws = XLSX.utils.aoa_to_sheet(taskReportRows(item));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'NhiemVu');
+  const safeName = (item.task||item.event||'NhiemVu').slice(0,25).replace(/[\\/:*?"<>|]/g,'');
+  XLSX.writeFile(wb, `NhiemVu_${State.klass.name}_${safeName}.xlsx`);
+}
+function exportAllTasks(){
+  if(!State.tasks.length){ toast('Chưa có nhiệm vụ nào để xuất', 'rose'); return; }
+  const rows = [['Ngày PC','Sự kiện','Nhiệm vụ','Thành viên tham gia','Hạn hoàn thành','Trạng thái','Kết quả']];
+  State.tasks.slice().sort((a,b)=> a.date-b.date).forEach(item=>{
+    const members = (item.memberIds||[]).map(id=> State.students.find(s=>s.id===id)).filter(Boolean);
+    const st = TASK_STATUS[taskStatusOf(item)] || TASK_STATUS.todo;
+    rows.push([
+      fmtDate(new Date(item.date).getTime()), item.event||'', item.task||'',
+      members.map(m=>m.name).join(', '), item.deadline ? fmtDate(new Date(item.deadline).getTime()) : '',
+      st.label, item.result||''
+    ]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'PhanCongNhiemVu');
+  XLSX.writeFile(wb, `PhanCongNhiemVu_${State.klass.name}.xlsx`);
+}
+
 const VIEWS = {
   'tong-quan-gvbm': viewTongQuanGvbm,
   'bang-diem': viewBangDiem,
@@ -4009,6 +4496,7 @@ const VIEWS = {
   'diem-danh': viewDiemDanh,
   'hanh-kiem': viewHanhKiem,
   'lien-he': viewLienHe,
+  'phan-cong': viewPhanCong,
   'tong-hop': viewTongHop,
   'hoc-ba': viewHocBa,
 };
@@ -4130,6 +4618,13 @@ service cloud.firestore {
       // GVCN và GVBM của lớp đều đọc/ghi được, để GVBM tự ghi tiết mình dạy.
       match /logbook/{entryId} {
         allow read, write: if inClass(classId);
+      }
+
+      // Phân công nhiệm vụ (bảng công việc riêng của GVCN): CHỈ GVCN được
+      // ghi/sửa/xoá. GVBM trong lớp chỉ đọc (để biết mình được phân việc gì).
+      match /tasks/{taskId} {
+        allow read:  if inClass(classId);
+        allow write: if isGvcn(classId);
       }
     }
   }
