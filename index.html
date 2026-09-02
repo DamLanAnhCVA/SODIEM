@@ -1528,10 +1528,14 @@ function viewHsGvbm(main, {isGvcn}={}){
     `Lớp ${State.klass.name}` + (isGvcn ? ' — bạn là chủ lớp, có thể tự thêm/sửa học sinh'
       : isOrphanOwner ? ' — lớp riêng của bạn (chưa có GVCN), bạn có thể tự thêm/sửa học sinh'
       : ' — chỉ xem (danh sách do GVCN quản lý)'),
-    canManage ? [
-      el('button', {class:'btn btn-ghost btn-sm', onclick: openBulkImportStudentsModal}, '📥 Nhập hàng loạt'),
-      el('button', {class:'btn btn-primary btn-sm', onclick: ()=>openStudentModal()}, '+ Thêm học sinh'),
-    ] : []
+    [
+      el('button', {class:'btn btn-ghost btn-sm', onclick: openRandomCallModal}, '🎲 Quay gọi tên'),
+      el('button', {class:'btn btn-ghost btn-sm', onclick: openRandomGroupsModal}, '🧩 Chia nhóm'),
+      ...(canManage ? [
+        el('button', {class:'btn btn-ghost btn-sm', onclick: openBulkImportStudentsModal}, '📥 Nhập hàng loạt'),
+        el('button', {class:'btn btn-primary btn-sm', onclick: ()=>openStudentModal()}, '+ Thêm học sinh'),
+      ] : []),
+    ]
   );
   if(!State.students.length){
     main.appendChild(el('div',{class:'empty-state'},
