@@ -133,6 +133,21 @@ a{ color:inherit; }
 .brand-name{ font-family:var(--font-display); font-weight:700; font-size:16px; line-height:1.1; }
 .brand-sub{ font-size:11px; color:var(--ink-soft); }
 
+/* Dải thương hiệu — dòng credit tác giả, nổi bật bằng chữ gradient */
+.credit-bar{
+  display:flex; align-items:center; justify-content:center; gap:6px;
+  padding:5px 14px; background:linear-gradient(90deg, var(--teal-tint), var(--amber-tint) 50%, var(--rose-tint));
+  border-bottom:1px solid var(--line);
+  position:sticky; top:0; z-index:39;
+}
+.credit-bar-text{
+  font-family:var(--font-display); font-weight:700; font-size:12px; letter-spacing:.01em;
+  text-align:center; line-height:1.3;
+  background:linear-gradient(90deg, var(--teal-dark), var(--amber-dark), var(--rose));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+@media (max-width:600px){ .credit-bar-text{ font-size:10.5px; } }
+
 .class-switcher{
   display:flex; align-items:center; gap:8px; margin-left:8px;
   padding:6px 10px 6px 12px; background:var(--paper-2); border-radius:999px;
@@ -430,6 +445,10 @@ table.data-table{ width:100%; border-collapse:collapse; font-size:13px; }
       <button class="icon-btn" id="btn-settings" title="Cài đặt">⚙️</button>
       <button class="icon-btn" id="btn-logout" title="Đăng xuất">⏻</button>
     </div>
+  </div>
+
+  <div class="credit-bar no-print">
+    <span class="credit-bar-text">✨ Sản phẩm được phát triển bởi cô giáo Đàm Thị Lan Anh — Trường THPT chuyên Chu Văn An, Hà Nội ✨</span>
   </div>
 
   <div class="shell">
@@ -743,6 +762,8 @@ function buildLoginCard(){
   const card = el('div', {class:'card auth-card'});
   card.appendChild(el('div', {class:'auth-logo'}, el('div',{class:'brand-mark'},'S'),
     el('div', {}, el('div',{class:'brand-name auth-title'},'Sổ Điểm & Sổ Chủ Nhiệm'), el('div',{class:'muted', style:'font-size:12px'},'Đăng nhập để tiếp tục'))));
+  card.appendChild(el('div', {class:'credit-bar-text', style:'display:block; margin:2px 0 16px; text-align:center'},
+    '✨ Sản phẩm được phát triển bởi cô giáo Đàm Thị Lan Anh — Trường THPT chuyên Chu Văn An, Hà Nội ✨'));
 
   let mode = 'login';
   const emailIn = el('input', {class:'input', type:'email', placeholder:'email@truong.edu.vn', autocomplete:'email'});
