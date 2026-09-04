@@ -17,7 +17,7 @@
     'https://www.gstatic.com/firebasejs/10.12.2/',
     'https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/'
   ];
-  var FILES = ['firebase-app-compat.js','firebase-auth-compat.js','firebase-firestore-compat.js'];
+  var FILES = ['firebase-app-compat.js','firebase-auth-compat.js','firebase-firestore-compat.js','firebase-storage-compat.js'];
 
   function loadScript(src){
     return new Promise(function(resolve, reject){
@@ -647,7 +647,7 @@ const State = {
   tasks: [],             // phân công nhiệm vụ của GVCN (collection classes/{id}/tasks)
 };
 
-let db = null, auth = null;
+let db = null, auth = null, storage = null;
 
 /* ==========================================================================
    3. FIREBASE BOOTSTRAP
@@ -659,6 +659,7 @@ function initFirebase(cfg){
   firebase.initializeApp(cfg);
   auth = firebase.auth();
   db = firebase.firestore();
+  try{ storage = firebase.storage(); }catch(e){ storage = null; }
   try{ db.enablePersistence({synchronizeTabs:true}).catch(()=>{}); }catch(e){}
   auth.onAuthStateChanged(onAuthChanged);
 }
@@ -1106,7 +1107,6 @@ const NAV = {
     {id:'hanh-kiem', label:'Vi phạm / Tuyên dương', icon:'⚖️'},
     {id:'lien-he', label:'Liên hệ phụ huynh', icon:'💬'},
     {id:'phan-cong', label:'Phân công nhiệm vụ', icon:'📌'},
-    {id:'tong-hop', label:'Tổng hợp GVBM', icon:'📚'},
     {id:'hoc-ba', label:'Nhận xét & Học bạ', icon:'📖'},
   ],
 };
@@ -3121,8 +3121,19 @@ function viewDiemDanh(main, {isGvcn}){
   if(isGvcn){
     const bar = el('div', {style:'display:flex; gap:8px; margin-top:14px; flex-wrap:wrap'},
       el('button',{class:'btn btn-ghost btn-sm', onclick:()=> bulkSetAttendance(date,'P')}, 'Tất cả có mặt'),
-      el('button',{class:'btn btn-ghost btn-sm', onclick: ()=> exportAttendanceMonth(date)}, '⬇️ Xuất điểm danh tháng'));
+      el('button',{class:'btn btn-ghost btn-sm', onclick: ()=> exportAttendanceRange('week', date)}, '⬇️ Xuất theo tuần'),
+      el('button',{class:'btn btn-ghost btn-sm', onclick: ()=> exportAttendanceRange('month', date)}, '⬇️ Xuất theo tháng'),
+      el('button',{class:'btn btn-ghost btn-sm', onclick: ()=> exportAttendanceRange('semester', date)}, '⬇️ Xuất theo kì'),
+      el('button',{class:'btn btn-ghost btn-sm', onclick: openAttendanceStudentReportModal}, '🖨️ Xuất PDF theo học sinh'));
     main.appendChild(bar);
+
+    const fromIn = el('input',{class:'input', type:'date', style:'width:auto'});
+    const toIn = el('input',{class:'input', type:'date', style:'width:auto'});
+    const rangeBar = el('div', {class:'card card-pad', style:'margin-top:10px; display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap'},
+      el('div',{}, el('label',{class:'field-label'},'Từ ngày'), fromIn),
+      el('div',{}, el('label',{class:'field-label'},'Đến ngày'), toIn),
+      el('button',{class:'btn btn-primary btn-sm', onclick: ()=> exportAttendanceCustomRange(fromIn.value, toIn.value)}, '⬇️ Xuất theo khoảng ngày (Excel)'));
+    main.appendChild(rangeBar);
   }
 
   // monthly summary
@@ -3149,9 +3160,12 @@ function bulkSetAttendance(date, status){
   State.students.forEach(s=> { newRec[s.id] = {status, note: attNoteOf(rec[s.id])}; });
   db.collection('classes').doc(State.classId).collection('attendance').doc(date).set({records:newRec, updatedAt:Date.now()}, {merge:true});
 }
-function exportAttendanceMonth(date){
-  const monthPrefix = date.slice(0,7);
-  const days = Object.keys(State.attendance).filter(d=>d.startsWith(monthPrefix)).sort();
+function exportAttendanceByRange(range, filenameSuffix){
+  const days = Object.keys(State.attendance).filter(d=>{
+    const t = new Date(d+'T12:00:00').getTime();
+    return t>=range.start && t<=range.end;
+  }).sort();
+  if(!days.length){ toast('Không có dữ liệu điểm danh trong khoảng thời gian này', 'rose'); return; }
   const header = ['Học sinh', ...days];
   const rows = [header];
   State.students.forEach(s=>{
@@ -3160,7 +3174,88 @@ function exportAttendanceMonth(date){
   const ws = XLSX.utils.aoa_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'DiemDanh');
-  XLSX.writeFile(wb, `DiemDanh_${State.klass.name}_${monthPrefix}.xlsx`);
+  XLSX.writeFile(wb, `DiemDanh_${State.klass.name}_${filenameSuffix}.xlsx`);
+}
+function exportAttendanceRange(rangeType, refDateStr){
+  const range = rangeOf(rangeType, refDateStr);
+  exportAttendanceByRange(range, range.label);
+}
+function exportAttendanceCustomRange(fromStr, toStr){
+  if(!fromStr || !toStr){ toast('Chọn đủ "Từ ngày" và "Đến ngày"', 'rose'); return; }
+  const start = new Date(fromStr+'T00:00:00').getTime();
+  const end = new Date(toStr+'T23:59:59').getTime();
+  if(start>end){ toast('"Từ ngày" phải trước "Đến ngày"', 'rose'); return; }
+  exportAttendanceByRange({start,end}, `${fromStr}_den_${toStr}`);
+}
+// ---- Báo cáo điểm danh PDF theo từng học sinh (tuần / tháng / kì / năm / khoảng ngày tự chọn) ----
+function openAttendanceStudentReportModal(){
+  const wrap = el('div', {});
+  wrap.appendChild(modalHeader('🖨️ Xuất điểm danh theo học sinh (PDF)'));
+  const stuSel = el('select', {class:'input'});
+  State.students.forEach(s=> stuSel.appendChild(el('option',{value:s.id}, s.name)));
+  const typeSel = el('select', {class:'input'},
+    el('option',{value:'week'}, 'Theo tuần (chứa ngày tham chiếu)'),
+    el('option',{value:'month'}, 'Theo tháng (chứa ngày tham chiếu)'),
+    el('option',{value:'semester'}, 'Theo học kì (chứa ngày tham chiếu)'),
+    el('option',{value:'year'}, 'Cả năm học (chứa ngày tham chiếu)'),
+    el('option',{value:'custom'}, 'Khoảng ngày tự chọn'));
+  const dateIn = el('input', {class:'input', type:'date', value: todayStr()});
+  const fromIn = el('input', {class:'input', type:'date'});
+  const toIn = el('input', {class:'input', type:'date'});
+  const refField = el('div',{class:'field'}, el('label',{class:'field-label'},'Ngày tham chiếu (nằm trong khoảng cần xuất)'), dateIn);
+  const customField = el('div',{class:'field', style:'display:none'}, el('label',{class:'field-label'},'Từ ngày — Đến ngày'), el('div',{style:'display:flex; gap:8px'}, fromIn, toIn));
+  typeSel.addEventListener('change', ()=>{
+    const isCustom = typeSel.value==='custom';
+    refField.style.display = isCustom ? 'none' : '';
+    customField.style.display = isCustom ? '' : 'none';
+  });
+  wrap.appendChild(el('div',{class:'field'}, el('label',{class:'field-label'},'Học sinh'), stuSel));
+  wrap.appendChild(el('div',{class:'field'}, el('label',{class:'field-label'},'Khoảng thời gian'), typeSel));
+  wrap.appendChild(refField);
+  wrap.appendChild(customField);
+  wrap.appendChild(el('button',{class:'btn btn-primary', style:'width:100%', onclick:()=>{
+    const stu = State.students.find(s=>s.id===stuSel.value);
+    if(!stu) return;
+    let range;
+    if(typeSel.value==='custom'){
+      if(!fromIn.value || !toIn.value){ toast('Chọn đủ "Từ ngày" và "Đến ngày"', 'rose'); return; }
+      range = {start: new Date(fromIn.value+'T00:00:00').getTime(), end: new Date(toIn.value+'T23:59:59').getTime(), human: `${fmtDate(new Date(fromIn.value+'T12:00:00'))} — ${fmtDate(new Date(toIn.value+'T12:00:00'))}`};
+    } else {
+      range = rangeOf(typeSel.value, dateIn.value || todayStr());
+    }
+    printStudentAttendanceReport(stu, range);
+    closeModal();
+  }}, '🖨️ Xuất báo cáo (PDF)'));
+  openModal(wrap);
+}
+function printStudentAttendanceReport(stu, range){
+  const days = Object.keys(State.attendance).filter(d=>{
+    const t = new Date(d+'T12:00:00').getTime();
+    return t>=range.start && t<=range.end;
+  }).sort();
+  const counts = {P:0,A:0,L:0,E:0};
+  const rowsHtml = days.map(d=>{
+    const raw = (State.attendance[d].records||{})[stu.id];
+    const st = attStatusOf(raw);
+    counts[st] = (counts[st]||0)+1;
+    const note = attNoteOf(raw);
+    return `<tr><td>${fmtDate(new Date(d+'T12:00:00'))}</td><td>${ATT_STATUS[st].label}</td><td style="text-align:left">${escapeHtml(note||'')}</td></tr>`;
+  }).join('') || `<tr><td colspan="3" style="color:#888">Không có dữ liệu điểm danh trong khoảng thời gian này</td></tr>`;
+  openPrintWindow(`Báo cáo điểm danh — ${stu.name}`, `
+    <h2>Báo cáo điểm danh học sinh</h2>
+    <p>Học sinh: <strong>${escapeHtml(stu.name)}</strong> — Lớp: ${escapeHtml(State.klass.name)}</p>
+    <p>Khoảng thời gian: <strong>${escapeHtml(range.human||range.label||'')}</strong> — Ngày in: ${fmtDate(new Date())}</p>
+
+    <h3 style="margin-top:18px">📊 Tổng hợp</h3>
+    <table><thead><tr><th>Có mặt</th><th>Vắng không phép</th><th>Vắng có phép</th><th>Đi học muộn</th></tr></thead>
+    <tbody><tr><td>${counts.P||0}</td><td>${counts.A||0}</td><td>${counts.E||0}</td><td>${counts.L||0}</td></tr></tbody></table>
+
+    <h3 style="margin-top:18px">📋 Chi tiết theo ngày (${days.length})</h3>
+    <table><thead><tr><th style="width:120px">Ngày</th><th style="width:140px">Trạng thái</th><th style="text-align:left">Ghi chú</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+
+    <p style="margin-top:28px">Giáo viên chủ nhiệm</p>
+    <p style="margin-top:56px; text-align:right; padding-right:40px">……………………………………</p>
+  `);
 }
 
 /* ==========================================================================
@@ -4211,14 +4306,12 @@ function buildMemberPicker(selectedIds, selectedRoles){
     getRoles: ()=> Object.fromEntries(Array.from(selected.entries()).filter(([,r])=> r && r.trim())),
   };
 }
-// Nhãn rút gọn cho nút "Thành viên" trong ô bảng (tối đa 2 tên rồi +N).
+// Nhãn nút "Thành viên" trong ô bảng — chỉ hiện số lượng, bấm vào mới xổ ra
+// danh sách đầy đủ (xem openTaskMemberPopover).
 function memberShortLabel(ids){
   ids = ids||[];
   if(!ids.length) return '+ Chọn thành viên';
-  const names = ids.map(id=> State.students.find(s=>s.id===id)).filter(Boolean).map(s=>s.name);
-  if(!names.length) return '+ Chọn thành viên';
-  if(names.length<=2) return '👥 '+names.join(', ');
-  return `👥 ${names[0]}, ${names[1]} +${names.length-2}`;
+  return `👥 ${ids.length} thành viên`;
 }
 function closeTaskMemberPopover(){
   if(_taskPopEl){ _taskPopEl.remove(); _taskPopEl=null; }
@@ -4228,28 +4321,64 @@ function closeTaskMemberPopover(){
 function _taskPopEscHandler(e){ if(e.key==='Escape') closeTaskMemberPopover(); }
 let _taskPopEl=null, _taskPopOutsideHandler=null;
 // Popover tích chọn nhanh thành viên, neo cạnh nút bấm trong ô bảng — không cần mở modal.
-// onSave(ids, roles) được gọi khi đóng popover (bấm "Xong", click ra ngoài, hoặc Esc).
+// Nếu đã có thành viên được chọn từ trước, mặc định chỉ hiện danh sách các thành viên đó
+// (xem đầy đủ, không bị rút gọn "+N") kèm nút "✏️ Sửa danh sách" — bấm vào mới hiện lại
+// toàn bộ học sinh trong lớp để tick chọn/bỏ chọn. Nếu chưa có ai được chọn thì hiện luôn
+// danh sách cả lớp để chọn.
+// onSave(ids, roles) được gọi khi đóng popover (bấm "Xong", click ra ngoài).
 function openTaskMemberPopover(anchorEl, initialIds, initialRoles, onSave){
   closeTaskMemberPopover();
-  const picker = buildMemberPicker(initialIds||[], initialRoles||{});
+  const ids = initialIds||[];
+  const roles = initialRoles||{};
   const pop = el('div',{class:'score-popover', style:'width:280px'});
-  pop.appendChild(el('div',{style:'font-weight:700; font-size:12.5px; margin-bottom:6px'}, '👥 Thành viên tham gia'));
-  pop.appendChild(picker.wrap);
-  const doneBtn = el('button',{class:'btn btn-primary btn-sm', style:'width:100%; margin-top:8px'}, 'Xong');
   let saved = false;
-  const commit = ()=>{ if(saved) return; saved = true; onSave(picker.getSelected(), picker.getRoles()); };
-  doneBtn.addEventListener('click', ()=>{ commit(); closeTaskMemberPopover(); });
-  pop.appendChild(doneBtn);
+  let getCurrentState = ()=> ({ids, roles});
+  const commit = ()=>{ if(saved) return; saved = true; const st = getCurrentState(); onSave(st.ids, st.roles); };
+
+  function reposition(){
+    const r = anchorEl.getBoundingClientRect();
+    const popW = 280;
+    let left = Math.min(Math.max(8, r.left), window.innerWidth - popW - 8);
+    pop.style.left = left+'px';
+    pop.style.top = (r.bottom + 6)+'px';
+    requestAnimationFrame(()=>{
+      const ph = pop.getBoundingClientRect().height;
+      if(r.bottom + 6 + ph > window.innerHeight - 8) pop.style.top = Math.max(8, r.top - ph - 6)+'px';
+    });
+  }
+
+  function renderEditMode(){
+    pop.innerHTML = '';
+    const picker = buildMemberPicker(ids, roles);
+    getCurrentState = ()=> ({ids: picker.getSelected(), roles: picker.getRoles()});
+    pop.appendChild(el('div',{style:'font-weight:700; font-size:12.5px; margin-bottom:6px'}, '👥 Thành viên tham gia'));
+    pop.appendChild(picker.wrap);
+    const doneBtn = el('button',{class:'btn btn-primary btn-sm', style:'width:100%; margin-top:8px'}, 'Xong');
+    doneBtn.addEventListener('click', ()=>{ commit(); closeTaskMemberPopover(); });
+    pop.appendChild(doneBtn);
+    reposition();
+  }
+
+  function renderViewMode(){
+    pop.innerHTML = '';
+    getCurrentState = ()=> ({ids, roles});
+    pop.appendChild(el('div',{style:'font-weight:700; font-size:12.5px; margin-bottom:6px'}, `👥 Thành viên tham gia (${ids.length})`));
+    const listBox = el('div',{style:'max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:10px; padding:8px; margin-bottom:8px'});
+    ids.forEach(id=>{
+      const s = State.students.find(x=>x.id===id);
+      if(!s) return;
+      const r = roles[id];
+      listBox.appendChild(el('div',{style:'padding:4px 2px; font-size:13px'}, r ? `${s.name} (${r})` : s.name));
+    });
+    pop.appendChild(listBox);
+    const editBtn = el('button',{class:'btn btn-ghost btn-sm', style:'width:100%'}, '✏️ Sửa danh sách');
+    editBtn.addEventListener('click', renderEditMode);
+    pop.appendChild(editBtn);
+    reposition();
+  }
+
   document.body.appendChild(pop);
-  const r = anchorEl.getBoundingClientRect();
-  const popW = 280;
-  let left = Math.min(Math.max(8, r.left), window.innerWidth - popW - 8);
-  pop.style.left = left+'px';
-  pop.style.top = (r.bottom + 6)+'px';
-  requestAnimationFrame(()=>{
-    const ph = pop.getBoundingClientRect().height;
-    if(r.bottom + 6 + ph > window.innerHeight - 8) pop.style.top = Math.max(8, r.top - ph - 6)+'px';
-  });
+  if(ids.length){ renderViewMode(); } else { renderEditMode(); }
   _taskPopEl = pop;
   _taskPopOutsideHandler = (e)=>{ if(!pop.contains(e.target) && e.target!==anchorEl){ commit(); closeTaskMemberPopover(); } };
   document.addEventListener('mousedown', _taskPopOutsideHandler, true);
@@ -4272,7 +4401,14 @@ function buildTaskRow(item, idx, isGvcn, tint, color){
     tr.appendChild(el('td',{}, item.task||'—'));
     tr.appendChild(el('td',{style:'max-width:220px; white-space:normal'}, memberLabel));
     tr.appendChild(el('td',{style:'text-align:center'}, el('span',{class:'badge '+st.cls}, st.label)));
-    tr.appendChild(el('td',{style:'max-width:200px; white-space:normal'}, item.result||'—'));
+    const resultCell = el('td',{style:'max-width:200px; white-space:normal'}, item.result||'—');
+    const evidence = item.evidence||[];
+    if(evidence.length){
+      const evWrap = el('div',{style:'margin-top:4px; display:flex; flex-direction:column; gap:2px'});
+      evidence.forEach(f=> evWrap.appendChild(el('a',{href:f.url, target:'_blank', rel:'noopener', style:'font-size:11.5px'}, (f.type&&f.type.startsWith('image')?'🖼️ ':'📄 ')+f.name)));
+      resultCell.appendChild(evWrap);
+    }
+    tr.appendChild(resultCell);
     return tr;
   }
 
@@ -4421,7 +4557,11 @@ function viewPhanCong(main, {isGvcn}){
     actions.push(el('button',{class:'btn btn-ghost btn-sm', title:'In / xuất PDF nhiệm vụ đang chọn', onclick:()=>{
       const item = State.tasks.find(t=>t.id===exportSel.value);
       if(item) exportTaskPdf(item); else toast('Chọn nhiệm vụ cần xuất', 'rose');
-    }}, '🖨️ In'));
+    }}, '🖨️ Xuất PDF'));
+    actions.push(el('button',{class:'btn btn-ghost btn-sm', title:'Xuất Excel nhiệm vụ đang chọn', onclick:()=>{
+      const item = State.tasks.find(t=>t.id===exportSel.value);
+      if(item) exportTaskRow(item); else toast('Chọn nhiệm vụ cần xuất', 'rose');
+    }}, '⬇️ Xuất Excel'));
     if(isGvcn){
       actions.push(el('button',{class:'btn btn-ghost btn-sm', title:'Cuộn tới dòng để sửa', onclick:()=>{
         const item = State.tasks.find(t=>t.id===exportSel.value);
@@ -4462,6 +4602,7 @@ function taskReportRows(item){
   const members = (item.memberIds||[]).map(id=> State.students.find(s=>s.id===id)).filter(Boolean);
   const roles = item.memberRoles||{};
   const st = TASK_STATUS[taskStatusOf(item)] || TASK_STATUS.todo;
+  const evidence = item.evidence||[];
   return [
     ['Ngày phân công', fmtDate(new Date(item.date).getTime())],
     ['Sự kiện', item.event||''],
@@ -4470,6 +4611,7 @@ function taskReportRows(item){
     ['Trạng thái', st.label],
     ['Thành viên tham gia', members.map(m=> roles[m.id] ? `${m.name} (${roles[m.id]})` : m.name).join(', ') || ''],
     ['Kết quả thực hiện', item.result||''],
+    ['Minh chứng', evidence.map(f=>f.name).join(', ')],
   ];
 }
 // Màu chữ nổi bật cho vai trò trưởng/phó khi in PDF gửi nhóm.
@@ -4489,12 +4631,15 @@ function exportTaskPdf(item){
     return `<tr><td>${i+1}</td><td style="text-align:left">${escapeHtml(m.name)}</td><td style="text-align:left; ${roleColorStyle(role)}">${escapeHtml(role||'Thành viên')}</td></tr>`;
   }).join('') : `<tr><td colspan="3">Chưa có thành viên nào được phân công</td></tr>`;
   const title = item.event || item.task || 'Nhiệm vụ';
+  const evidence = item.evidence||[];
+  const evidenceHtml = evidence.length ? `<p style="margin-top:10px"><strong>Minh chứng:</strong></p><ul>${evidence.map(f=>`<li><a href="${f.url}">${escapeHtml(f.name)}</a></li>`).join('')}</ul>` : '';
   openPrintWindow(title, `
     <h2>${escapeHtml(title)}</h2>
     <p>Lớp: ${escapeHtml(State.klass.name)} — Ngày phân công: ${fmtDate(new Date(item.date).getTime())}${item.deadline ? ' — Hạn hoàn thành: '+fmtDate(new Date(item.deadline).getTime()) : ''} — Trạng thái: ${escapeHtml(st.label)}</p>
     ${item.task ? `<p><strong>Nhiệm vụ:</strong> ${escapeHtml(item.task).replace(/\n/g,'<br>')}</p>` : ''}
     <table><thead><tr><th>#</th><th style="text-align:left">Họ tên</th><th style="text-align:left">Vai trò</th></tr></thead><tbody>${rowsHtml}</tbody></table>
     ${item.result ? `<p style="margin-top:16px"><strong>Kết quả thực hiện:</strong> ${escapeHtml(item.result).replace(/\n/g,'<br>')}</p>` : ''}
+    ${evidenceHtml}
   `);
 }
 function exportTaskRow(item){
@@ -4506,14 +4651,14 @@ function exportTaskRow(item){
 }
 function exportAllTasks(){
   if(!State.tasks.length){ toast('Chưa có nhiệm vụ nào để xuất', 'rose'); return; }
-  const rows = [['Ngày PC','Sự kiện','Nhiệm vụ','Thành viên tham gia','Hạn hoàn thành','Trạng thái','Kết quả']];
+  const rows = [['Ngày PC','Sự kiện','Nhiệm vụ','Thành viên tham gia','Hạn hoàn thành','Trạng thái','Kết quả','Minh chứng']];
   State.tasks.slice().sort((a,b)=> a.date-b.date).forEach(item=>{
     const members = (item.memberIds||[]).map(id=> State.students.find(s=>s.id===id)).filter(Boolean);
     const st = TASK_STATUS[taskStatusOf(item)] || TASK_STATUS.todo;
     rows.push([
       fmtDate(new Date(item.date).getTime()), item.event||'', item.task||'',
       members.map(m=>m.name).join(', '), item.deadline ? fmtDate(new Date(item.deadline).getTime()) : '',
-      st.label, item.result||''
+      st.label, item.result||'', (item.evidence||[]).map(f=>f.name).join(', ')
     ]);
   });
   const ws = XLSX.utils.aoa_to_sheet(rows);
@@ -4667,6 +4812,20 @@ service cloud.firestore {
   }
 }`;
 
+// Rules cho Firebase Storage (file minh chứng nhiệm vụ). Dán vào Firebase Console →
+// Storage → Rules. Chỉ GVCN của lớp mới được tải lên/xoá; ai đã đăng nhập và ở
+// trong lớp đó thì đọc được (để xem minh chứng qua link).
+const STORAGE_RULES = `rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /taskEvidence/{classId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && firestore.get(/databases/(default)/documents/classes/$(classId)).data.gvcnUid == request.auth.uid;
+    }
+  }
+}`;
+
 function openSettingsModal(){
   const wrap = el('div', {});
   wrap.appendChild(modalHeader('Cài đặt'));
@@ -4707,9 +4866,22 @@ function openSettingsModal(){
       const pre = el('pre', {style:'background:var(--paper-2); padding:14px; border-radius:10px; font-size:11px; overflow-x:auto; white-space:pre-wrap; font-family:var(--font-mono)'}, FIRESTORE_RULES);
       body.appendChild(pre);
       body.appendChild(el('button',{class:'btn btn-ghost', style:'width:100%', onclick:()=> copyText(FIRESTORE_RULES)}, '📋 Sao chép Rules'));
+      body.appendChild(el('p',{class:'muted', style:'font-size:12.5px; margin:18px 0 10px; line-height:1.6'}, 'Dán đoạn Storage Rules này vào Firebase Console → Storage → Rules — dùng cho file minh chứng (ảnh/PDF) đính kèm ở "Kết quả" của Phân công nhiệm vụ. Cần bật Firebase Storage cho project trước (Console → Storage → Get started) thì tính năng tải file minh chứng mới hoạt động.'));
+      const pre2 = el('pre', {style:'background:var(--paper-2); padding:14px; border-radius:10px; font-size:11px; overflow-x:auto; white-space:pre-wrap; font-family:var(--font-mono)'}, STORAGE_RULES);
+      body.appendChild(pre2);
+      body.appendChild(el('button',{class:'btn btn-ghost', style:'width:100%', onclick:()=> copyText(STORAGE_RULES)}, '📋 Sao chép Storage Rules'));
     } else if(mode==='account'){
       body.appendChild(el('p',{class:'field-label'}, 'Tài khoản: '+ (State.user?.email||'')));
       body.appendChild(el('button',{class:'btn btn-ghost', style:'width:100%; margin-top:10px', onclick: exportAllDataJson}, '⬇️ Sao lưu toàn bộ dữ liệu lớp (JSON)'));
+      const restoreInput = el('input',{type:'file', accept:'application/json,.json', style:'display:none'});
+      restoreInput.addEventListener('change', ()=>{
+        const file = restoreInput.files && restoreInput.files[0];
+        restoreInput.value = '';
+        if(file) importAllDataJson(file);
+      });
+      body.appendChild(restoreInput);
+      body.appendChild(el('button',{class:'btn btn-ghost', style:'width:100%; margin-top:8px', onclick: ()=> restoreInput.click()}, '⬆️ Khôi phục từ file sao lưu (JSON)'));
+      body.appendChild(el('p',{class:'muted', style:'font-size:11px; margin-top:4px'}, 'Sẽ GHI ĐÈ toàn bộ học sinh, môn học, điểm số, điểm danh, vi phạm/tuyên dương và bảng điểm tổng hợp của lớp đang chọn bằng dữ liệu trong file sao lưu. Không thể hoàn tác.'));
       const canDeleteClass = State.klass && (
         State.klass.gvcnUid === State.user.uid ||
         (!State.klass.gvcnUid && State.klass.createdByUid === State.user.uid)
@@ -4769,6 +4941,54 @@ function exportAllDataJson(){
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `SaoLuu_${State.klass.name}.json`; a.click();
   toast('Đã tải file sao lưu','sage');
+}
+// Khôi phục dữ liệu lớp từ file JSON đã xuất bởi exportAllDataJson(). GHI ĐÈ (xoá hết rồi ghi lại)
+// các subcollection students/subjects/gradebook/attendance/conduct/finalScores của lớp ĐANG CHỌN.
+// Không đụng tới doc lớp (klass) — giữ nguyên gvcnUid/gvbmUids/tên lớp hiện tại để tránh xung đột quyền.
+async function importAllDataJson(file){
+  if(!State.classId){ toast('Chưa chọn lớp','rose'); return; }
+  let data;
+  try{
+    const text = await file.text();
+    data = JSON.parse(text);
+  }catch(e){ toast('File JSON không hợp lệ: '+e.message, 'rose'); return; }
+
+  const counts = {
+    students: (data.students||[]).length,
+    subjects: (data.subjects||[]).length,
+    gradebook: Object.keys(data.gradebook||{}).length,
+    attendance: Object.keys(data.attendance||{}).length,
+    conduct: (data.conduct||[]).length,
+    finalScores: Object.keys(data.finalScores||{}).length,
+  };
+  const summary = `Học sinh: ${counts.students}, Môn học: ${counts.subjects}, Điểm số: ${counts.gradebook}, Điểm danh: ${counts.attendance}, Vi phạm/tuyên dương: ${counts.conduct}, Bảng điểm tổng hợp: ${counts.finalScores}`;
+  if(!confirm(`Khôi phục sẽ XOÁ TOÀN BỘ dữ liệu hiện tại của lớp "${State.klass?.name||''}" và thay bằng dữ liệu trong file sao lưu:\n${summary}\n\nBạn chắc chắn muốn tiếp tục?`)) return;
+  if(!confirm('Xác nhận lần cuối: KHÔNG THỂ HOÀN TÁC. Tiếp tục khôi phục?')) return;
+
+  toast('Đang khôi phục dữ liệu…');
+  try{
+    const classRef = db.collection('classes').doc(State.classId);
+    for(const sub of ['students','subjects','gradebook','attendance','conduct','finalScores']){
+      await deleteAllDocsIn(classRef.collection(sub));
+    }
+    let batch = db.batch(); let n=0;
+    const addToBatch = (ref, docData)=>{
+      batch.set(ref, docData);
+      n++;
+      return (n%400===0) ? (async()=>{ await batch.commit(); batch = db.batch(); })() : null;
+    };
+    for(const s of (data.students||[])){ const {id, ...rest} = s; await addToBatch(classRef.collection('students').doc(id), rest); }
+    for(const s of (data.subjects||[])){ const {id, ...rest} = s; await addToBatch(classRef.collection('subjects').doc(id), rest); }
+    for(const [key, val] of Object.entries(data.gradebook||{})){ const {id, ...rest} = val; await addToBatch(classRef.collection('gradebook').doc(key), rest); }
+    for(const [date, val] of Object.entries(data.attendance||{})){ await addToBatch(classRef.collection('attendance').doc(date), val); }
+    for(const c of (data.conduct||[])){ const {id, ...rest} = c; await addToBatch(classRef.collection('conduct').doc(id), rest); }
+    for(const [sid, val] of Object.entries(data.finalScores||{})){ await addToBatch(classRef.collection('finalScores').doc(sid), val); }
+    if(n%400!==0) await batch.commit();
+    toast('Đã khôi phục dữ liệu từ file sao lưu','sage');
+    closeModal();
+  }catch(e){
+    toast('Lỗi khôi phục: '+e.message, 'rose');
+  }
 }
 
 /* ==========================================================================
