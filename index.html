@@ -358,6 +358,38 @@ table.data-table{ width:100%; border-collapse:collapse; font-size:13px; }
 }
 .winner-pop{ animation:winner-pop .35s ease-out; }
 
+/* ==========================================================================
+   COUNTDOWN TIMER — khung đồng hồ đếm ngược nổi, dùng chung cho GVCN & GVBM
+   ========================================================================== */
+.timer-widget{
+  position:fixed; right:20px; bottom:20px; z-index:150;
+  background:var(--card); border:1.5px solid var(--line); border-radius:var(--radius-l);
+  box-shadow:var(--shadow-2); padding:14px 16px 12px; width:172px;
+  display:flex; flex-direction:column; align-items:center; gap:9px;
+  animation:timer-pop .25s ease-out;
+}
+@keyframes timer-pop{ from{ transform:scale(.85); opacity:0; } to{ transform:scale(1); opacity:1; } }
+.timer-widget-head{ display:flex; align-items:center; justify-content:space-between; width:100%; }
+.timer-widget-label{ font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; }
+.timer-widget-x{ border:none; background:transparent; color:var(--ink-soft); cursor:pointer; font-size:13px; padding:2px 5px; border-radius:6px; line-height:1.6; }
+.timer-widget-x:hover{ background:var(--paper-2); color:var(--ink); }
+.timer-widget-clock{ font-family:var(--font-mono); font-size:34px; font-weight:700; color:var(--ink); letter-spacing:.02em; line-height:1; }
+.timer-widget-bar{ width:100%; height:5px; border-radius:999px; background:var(--paper-2); overflow:hidden; }
+.timer-widget-bar-fill{ height:100%; background:var(--teal); border-radius:999px; transition:width 1s linear; width:100%; }
+.timer-widget-controls{ display:flex; gap:6px; }
+.timer-widget-controls .icon-btn{ width:32px; height:32px; font-size:12px; }
+.timer-widget.timer-warn .timer-widget-clock{ color:var(--rose); animation:timer-blink 1s step-start infinite; }
+.timer-widget.timer-warn .timer-widget-bar-fill{ background:var(--rose); }
+@keyframes timer-blink{ 50%{ opacity:.3; } }
+.timer-widget.timer-done{ background:var(--rose-tint); border-color:var(--rose); animation:timer-shake .45s ease-in-out 3; }
+.timer-widget.timer-done .timer-widget-clock{ color:var(--rose); }
+.timer-widget-done-label{ font-size:12px; font-weight:700; color:var(--rose); text-align:center; }
+@keyframes timer-shake{ 0%,100%{ transform:translateX(0); } 25%{ transform:translateX(-4px); } 75%{ transform:translateX(4px); } }
+@media (max-width:880px){
+  .timer-widget{ bottom:86px; right:14px; width:150px; padding:12px 14px 10px; }
+  .timer-widget-clock{ font-size:27px; }
+}
+
 /* Auth screen */
 .auth-wrap{
   min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;
@@ -441,6 +473,7 @@ table.data-table{ width:100%; border-collapse:collapse; font-size:13px; }
     </div>
 
     <div class="topbar-actions no-print">
+      <button class="icon-btn" id="btn-timer" title="Đồng hồ đếm ngược">⏱️</button>
       <button class="icon-btn" id="btn-sync-status" title="Trạng thái đồng bộ">☁️</button>
       <button class="icon-btn" id="btn-settings" title="Cài đặt">⚙️</button>
       <button class="icon-btn" id="btn-logout" title="Đăng xuất">⏻</button>
@@ -535,6 +568,200 @@ function fireConfetti(container){
   }
   container.appendChild(burst);
   setTimeout(()=>{ burst.remove(); }, 1500);
+}
+
+/* ==========================================================================
+   ĐỒNG HỒ BẤM GIỜ ĐẾM NGƯỢC — dùng chung cho cả GVCN và GVBM (nút ⏱️ trên
+   topbar, ngoài phần tab vai trò nên luôn hiện ở cả 2 chế độ). Tự nhập số
+   phút, chạy nổi ở góc màn hình dù chuyển qua lại giữa các mục, hết giờ tự
+   phát một đoạn nhạc sôi động để báo hiệu cả lớp.
+   ========================================================================== */
+const TimerState = {
+  totalSeconds: 0, remaining: 0, running: false, paused: false,
+  intervalId: null, playSound: true, endedFlag: false,
+};
+
+function formatTimerClock(sec){
+  sec = Math.max(0, Math.round(sec));
+  return pad2(Math.floor(sec/60)) + ':' + pad2(sec%60);
+}
+
+function openTimerSetupModal(){
+  if(TimerState.running || TimerState.endedFlag){ showTimerWidget(); toast('Đồng hồ đang chạy — xem ở góc màn hình', ''); return; }
+  const wrap = el('div',{});
+  wrap.appendChild(modalHeader('⏱️ Đồng hồ đếm ngược'));
+  wrap.appendChild(el('p',{class:'muted', style:'font-size:12.5px; margin-bottom:14px; line-height:1.6'},
+    'Dùng khi cho học sinh làm bài, thảo luận nhóm, chơi trò chơi… Hết giờ sẽ tự phát nhạc sôi động để báo hiệu.'));
+
+  const field = el('div',{class:'field'});
+  field.appendChild(el('label',{class:'field-label'}, 'Số giây đếm ngược'));
+  const input = el('input',{class:'input', type:'number', min:'1', max:'10800', step:'1', value:'300', inputmode:'numeric'});
+  field.appendChild(input);
+  wrap.appendChild(field);
+
+  const presetRow = el('div',{style:'display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px'});
+  [1,3,5,10,15,20,30,45].forEach(m=>{
+    presetRow.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ input.value = m*60; }}, m+' phút'));
+  });
+  wrap.appendChild(presetRow);
+
+  const soundField = el('div',{class:'field', style:'display:flex; align-items:center; gap:8px'});
+  const soundChk = el('input',{type:'checkbox', id:'timer-sound-chk', checked:'checked', style:'width:18px; height:18px; flex-shrink:0'});
+  soundField.appendChild(soundChk);
+  soundField.appendChild(el('label',{for:'timer-sound-chk', style:'font-size:13px; font-weight:600; cursor:pointer'}, '🔊 Phát nhạc sôi động khi hết giờ'));
+  wrap.appendChild(soundField);
+
+  const startBtn = el('button',{class:'btn btn-primary', style:'width:100%', onclick:()=>{
+    const secs = parseFloat(input.value);
+    if(!secs || secs<=0){ toast('Nhập số giây hợp lệ','rose'); return; }
+    startCountdown(Math.round(secs), soundChk.checked);
+    closeModal();
+  }}, '▶️ Bắt đầu đếm ngược');
+  wrap.appendChild(startBtn);
+  input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); startBtn.click(); } });
+
+  openModal(wrap);
+  setTimeout(()=> input.focus(), 30);
+}
+
+function startCountdown(seconds, playSound){
+  stopCountdown(true);
+  TimerState.totalSeconds = seconds;
+  TimerState.remaining = seconds;
+  TimerState.running = true;
+  TimerState.paused = false;
+  TimerState.endedFlag = false;
+  TimerState.playSound = playSound !== false;
+  buildTimerWidget();
+  TimerState.intervalId = setInterval(tickCountdown, 1000);
+}
+
+function tickCountdown(){
+  if(TimerState.paused) return;
+  TimerState.remaining -= 1;
+  if(TimerState.remaining <= 0){
+    TimerState.remaining = 0;
+    updateTimerWidget();
+    onCountdownFinished();
+    return;
+  }
+  updateTimerWidget();
+}
+
+function onCountdownFinished(){
+  if(TimerState.intervalId) clearInterval(TimerState.intervalId);
+  TimerState.intervalId = null;
+  TimerState.running = false;
+  TimerState.endedFlag = true;
+  const w = $('#timer-widget');
+  if(w) w.classList.add('timer-done');
+  renderTimerControls();
+  if(TimerState.playSound) playTimerEndSound();
+  if(navigator.vibrate){ try{ navigator.vibrate([200,100,200,100,400]); }catch(e){} }
+  toast('⏰ Hết giờ!', 'rose');
+}
+
+function resetTimer(){
+  stopTimerEndSound();
+  TimerState.endedFlag = false;
+  TimerState.paused = false;
+  TimerState.remaining = TimerState.totalSeconds;
+  const w = $('#timer-widget'); if(w) w.classList.remove('timer-done','timer-warn');
+  if(!TimerState.intervalId){ TimerState.running = true; TimerState.intervalId = setInterval(tickCountdown, 1000); }
+  updateTimerWidget();
+  renderTimerControls();
+}
+
+// removeWidget=false dùng khi bắt đầu lượt đếm mới (khỏi nhấp nháy xoá/tạo lại khung).
+function stopCountdown(removeWidget){
+  if(TimerState.intervalId) clearInterval(TimerState.intervalId);
+  TimerState.intervalId = null;
+  TimerState.running = false;
+  TimerState.paused = false;
+  TimerState.endedFlag = false;
+  stopTimerEndSound();
+  if(removeWidget){ const w = $('#timer-widget'); if(w) w.remove(); }
+}
+
+function buildTimerWidget(){
+  const old = $('#timer-widget'); if(old) old.remove();
+  const w = el('div',{class:'timer-widget no-print', id:'timer-widget'});
+  w.appendChild(el('div',{class:'timer-widget-head'},
+    el('span',{class:'timer-widget-label'}, '⏱️ Đếm ngược'),
+    el('button',{class:'timer-widget-x', title:'Đóng đồng hồ', onclick: closeTimerWidget}, '✕')
+  ));
+  w.appendChild(el('div',{class:'timer-widget-clock', id:'timer-widget-clock'}, formatTimerClock(TimerState.remaining)));
+  w.appendChild(el('div',{class:'timer-widget-bar'}, el('div',{class:'timer-widget-bar-fill', id:'timer-widget-bar-fill'})));
+  w.appendChild(el('div',{class:'timer-widget-controls', id:'timer-widget-controls'}));
+  document.body.appendChild(w);
+  updateTimerWidget();
+  renderTimerControls();
+}
+
+function updateTimerWidget(){
+  const clockEl = $('#timer-widget-clock');
+  if(clockEl) clockEl.textContent = formatTimerClock(TimerState.remaining);
+  const fill = $('#timer-widget-bar-fill');
+  if(fill){
+    const pct = TimerState.totalSeconds>0 ? Math.max(0, Math.min(100, (TimerState.remaining/TimerState.totalSeconds)*100)) : 0;
+    fill.style.width = pct+'%';
+  }
+  const w = $('#timer-widget');
+  if(w) w.classList.toggle('timer-warn', TimerState.remaining<=10 && TimerState.remaining>0);
+}
+
+function renderTimerControls(){
+  const c = $('#timer-widget-controls');
+  if(!c) return;
+  c.innerHTML = '';
+  if(TimerState.endedFlag){
+    c.appendChild(el('button',{class:'icon-btn', title:'Tắt nhạc', onclick: stopTimerEndSound}, '🔇'));
+    c.appendChild(el('button',{class:'icon-btn', title:'Đặt lại & chạy tiếp', onclick: resetTimer}, '↻'));
+  } else {
+    c.appendChild(el('button',{class:'icon-btn', title: TimerState.paused?'Tiếp tục':'Tạm dừng', onclick: toggleTimerPause}, TimerState.paused?'▶️':'⏸️'));
+    c.appendChild(el('button',{class:'icon-btn', title:'Cộng thêm 1 phút', onclick:()=>{ TimerState.remaining+=60; TimerState.totalSeconds+=60; updateTimerWidget(); }}, '+1p'));
+    c.appendChild(el('button',{class:'icon-btn', title:'Đặt lại', onclick: resetTimer}, '↻'));
+  }
+}
+
+function toggleTimerPause(){
+  TimerState.paused = !TimerState.paused;
+  renderTimerControls();
+}
+
+function closeTimerWidget(){ stopCountdown(true); }
+
+function showTimerWidget(){
+  if(!$('#timer-widget')) buildTimerWidget();
+  else { updateTimerWidget(); renderTimerControls(); }
+}
+
+/* Nhạc kết thúc — giai điệu ngắn, rộn ràng, lặp lại vài nhịp để thu hút chú ý
+   cả lớp (khác với playCelebrationSound() ở trên dùng cho khen thưởng học
+   sinh). Có thể tắt sớm bằng nút 🔇 trên khung đồng hồ. */
+let _timerEndAudioCtx = null;
+function playTimerEndSound(){
+  try{
+    _timerEndAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _timerEndAudioCtx;
+    const melody = [784,988,1175,988,1175,1568,1175,988,784,988,1175,1568]; // giai điệu vui, sôi động
+    const noteDur = 0.15;
+    melody.forEach((freq,i)=>{
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      const t0 = ctx.currentTime + i*noteDur;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.22, t0+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0+noteDur*0.95);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t0); osc.stop(t0+noteDur);
+    });
+  }catch(e){ /* im lặng nếu trình duyệt chặn audio tự phát */ }
+}
+function stopTimerEndSound(){
+  if(_timerEndAudioCtx){ try{ _timerEndAudioCtx.close(); }catch(e){} _timerEndAudioCtx = null; }
 }
 
 function toast(msg, kind=''){
@@ -4994,6 +5221,7 @@ async function importAllDataJson(file){
 /* ==========================================================================
    16. WIRING & BOOTSTRAP
    ========================================================================== */
+$('#btn-timer').addEventListener('click', openTimerSetupModal);
 $('#btn-settings').addEventListener('click', openSettingsModal);
 $('#btn-logout').addEventListener('click', ()=>{ if(confirm('Đăng xuất khỏi ứng dụng?')) auth.signOut(); });
 $('#btn-sync-status').addEventListener('click', ()=> toast(navigator.onLine ? 'Đã kết nối — dữ liệu đồng bộ tự động' : 'Mất kết nối mạng — thay đổi sẽ đồng bộ khi có mạng lại', navigator.onLine?'sage':'rose'));
