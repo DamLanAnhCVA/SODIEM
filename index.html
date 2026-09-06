@@ -1948,6 +1948,26 @@ function openPrintWindow(title, bodyHtml){
    8b. GVBM — THỜI KHOÁ BIỂU + KẾ HOẠCH DẠY HỌC (AI đồng bộ) + SỔ ĐẦU BÀI
    ========================================================================== */
 const TKB_DAYS = ['Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7'];
+// Khung giờ chính thức của từng tiết học (theo quy định của trường) — hiển thị bằng
+// chữ đỏ nhỏ ngay dưới số tiết ở mọi bảng TKB trong trang, để GV/HS biết tiết đó học
+// lúc mấy giờ mà không cần tra bảng quy định riêng. Buổi chiều chỉ có 4 tiết nên tiết 5
+// để trống (không hiển thị giờ).
+const PERIOD_TIMES = {
+  morning:   ['7h15-8h00', '8h15-9h00', '9h10-9h55', '10h05-10h50', '11h00-11h45'],
+  afternoon: ['13h30-14h15', '14h25-15h10', '15h20-16h05', '16h15-17h00', ''],
+};
+function periodTimeLabel(buoiKey, pIdx){
+  const arr = PERIOD_TIMES[buoiKey] || [];
+  return arr[pIdx] || '';
+}
+// Dựng nội dung 1 ô "Tiết" (số tiết + khung giờ màu đỏ bên dưới, nếu có) — dùng chung
+// cho mọi bảng TKB trong trang để đồng bộ hiển thị. buoiKey phải là 'morning'/'afternoon'.
+function periodCellContent(pIdx, buoiKey){
+  const time = periodTimeLabel(buoiKey, pIdx);
+  const parts = [el('div',{}, String(pIdx+1))];
+  if(time) parts.push(el('div',{style:'color:var(--rose); font-size:10px; font-weight:700; margin-top:2px; white-space:nowrap'}, time));
+  return parts;
+}
 function emptyTimetableGrid(){ return Array.from({length:5}, ()=> ({0:'',1:'',2:'',3:'',4:'',5:''})); }
 // Mỗi hàng của TKB được lưu dưới dạng OBJECT (map {"0":..,"1":..,...}), KHÔNG dùng mảng-trong-mảng,
 // vì Firestore không hỗ trợ lưu "nested array" (mảng chứa mảng) — cố lưu sẽ báo lỗi ngay khi gọi set().
@@ -2193,13 +2213,14 @@ function findTimetableSlots(tt, className, subjectName){
   return strict.length ? strict : slots;
 }
 function buildReadonlyGrid(label, g){
+  const buoiKey = label==='Buổi sáng' ? 'morning' : 'afternoon';
   const gw = el('div',{style:'overflow-x:auto; margin-bottom:12px'});
   gw.appendChild(el('div',{style:'font-weight:700; margin-bottom:6px; font-size:12px'}, label));
   const table = el('table',{class:'data-table'});
   table.appendChild(el('thead',{}, el('tr',{}, el('th',{},'Tiết'), ...TKB_DAYS.map(d=> el('th',{}, d)))));
   const tbody = el('tbody');
   g.forEach((row,i)=>{
-    tbody.appendChild(el('tr',{}, el('td',{style:'font-weight:700'}, String(i+1)), ...Array.from({length:6},(_,d)=> el('td',{}, row[d]||'—'))));
+    tbody.appendChild(el('tr',{}, el('td',{style:'font-weight:700'}, ...periodCellContent(i, buoiKey)), ...Array.from({length:6},(_,d)=> el('td',{}, row[d]||'—'))));
   });
   table.appendChild(tbody); gw.appendChild(table);
   return gw;
@@ -2375,7 +2396,7 @@ function buildTimetableEditor(tt, weekMondayIso){
     table.appendChild(el('thead',{}, el('tr',{}, el('th',{},'Tiết'), ...TKB_DAYS.map(d=> el('th',{}, d)))));
     const tbody = el('tbody');
     weekGrid[key].forEach((row, pIdx)=>{
-      const tr = el('tr',{}, el('td',{style:'font-weight:700; vertical-align:top'}, String(pIdx+1)));
+      const tr = el('tr',{}, el('td',{style:'font-weight:700; vertical-align:top'}, ...periodCellContent(pIdx, key)));
       for(let dIdx=0; dIdx<6; dIdx++){
         const td = el('td',{style:'min-width:132px; vertical-align:top'});
         const cin = el('input',{class:'input', style:'min-width:110px; text-align:center', value: row[dIdx]||'', placeholder:'—'});
@@ -2795,8 +2816,9 @@ function buildTongHopWeekTable(results, label, buoiFilter){
   const table = el('table', {class:'data-table'});
   table.appendChild(el('thead',{}, el('tr',{}, el('th',{},'Tiết'), ...TKB_DAYS.map(d=> el('th',{}, d)))));
   const tbody = el('tbody');
+  const buoiKeyTH = buoiFilter==='sáng' ? 'morning' : 'afternoon';
   for(let p=1; p<=rowsCount; p++){
-    const tr = el('tr',{}, el('td',{style:'font-weight:700; vertical-align:top'}, String(p)));
+    const tr = el('tr',{}, el('td',{style:'font-weight:700; vertical-align:top'}, ...periodCellContent(p-1, buoiKeyTH)));
     for(let d=0; d<6; d++){
       const td = el('td',{style:'min-width:170px; vertical-align:top'});
       const items = byCell[`${p}_${d}`] || [];
