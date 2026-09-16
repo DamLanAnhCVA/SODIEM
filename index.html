@@ -1618,12 +1618,22 @@ function viewBangDiem(main){
 
     const isAdjPlus = a=> a.kind ? a.kind==='plus' : a.value>0;
     const isAdjMinus = a=> a.kind ? a.kind==='minus' : a.value<0;
-    const adjPlusSum = round1((gb.adj||[]).filter(isAdjPlus).reduce((a,b)=>a+(b.value||0),0));
-    const adjMinusSum = round1((gb.adj||[]).filter(isAdjMinus).reduce((a,b)=>a+(b.value||0),0));
-    const plusBtn = el('button',{class:'adj-badge-btn'}, el('span',{class:'badge badge-sage'}, '+'+adjPlusSum));
+    const adjPlusList = (gb.adj||[]).filter(isAdjPlus);
+    const adjMinusList = (gb.adj||[]).filter(isAdjMinus);
+    const adjPlusSum = round1(adjPlusList.reduce((a,b)=>a+(b.value||0),0));
+    const adjMinusSum = round1(adjMinusList.reduce((a,b)=>a+(b.value||0),0));
+    // Nhiều GV chỉ ghi lý do mà không nhập điểm, nên hiện SỐ LẦN được cộng/trừ là chính;
+    // chỉ hiện thêm tổng điểm (đ) khi có điểm khác 0.
+    const adjBadgeText = (list, sum, isPlus)=>{
+      if(!list.length) return isPlus?'+0':'0';
+      let t = list.length+' lần';
+      if(sum) t += ' · '+(isPlus?'+':'')+sum+'đ';
+      return t;
+    };
+    const plusBtn = el('button',{class:'adj-badge-btn'}, el('span',{class:'badge badge-sage'}, adjBadgeText(adjPlusList, adjPlusSum, true)));
     plusBtn.addEventListener('click', (e)=>{ e.stopPropagation(); openAdjPopover(plusBtn, subj, stu, gb, 'plus'); });
     tr.appendChild(el('td',{style:'text-align:center'}, plusBtn));
-    const minusBtn = el('button',{class:'adj-badge-btn'}, el('span',{class:'badge badge-rose'}, String(adjMinusSum)));
+    const minusBtn = el('button',{class:'adj-badge-btn'}, el('span',{class:'badge badge-rose'}, adjBadgeText(adjMinusList, adjMinusSum, false)));
     minusBtn.addEventListener('click', (e)=>{ e.stopPropagation(); openAdjPopover(minusBtn, subj, stu, gb, 'minus'); });
     tr.appendChild(el('td',{style:'text-align:center'}, minusBtn));
 
@@ -1674,28 +1684,62 @@ let _adjPopoverEl = null, _adjPopoverOutsideHandler = null;
 function openAdjPopover(anchorEl, subj, stu, gbRef, kind){
   closeAdjPopover();
   let localAdj = (gbRef.adj || []).slice();
+  let editingIdx = null; // null = đang ở chế độ thêm mới; số = đang sửa mục có _idx này
   const isPlus = kind==='plus';
   const pop = el('div', {class:'score-popover'});
-  pop.appendChild(el('div',{style:'font-weight:700; font-size:12.5px; margin-bottom:6px'}, (isPlus?'➕ Điểm cộng — ':'➖ Điểm trừ — ')+stu.name));
+  const headerRow = el('div', {style:'display:flex; justify-content:space-between; align-items:center; margin-bottom:6px'});
+  headerRow.appendChild(el('div',{style:'font-weight:700; font-size:12.5px'}, (isPlus?'➕ Điểm cộng — ':'➖ Điểm trừ — ')+stu.name));
+  const totalBadge = el('span',{class:'badge '+(isPlus?'badge-sage':'badge-rose')});
+  headerRow.appendChild(totalBadge);
+  pop.appendChild(headerRow);
 
   const listWrap = el('div', {class:'adj-list'});
   const valIn = el('input',{class:'input', type:'number', min:'0', step:'0.25', placeholder:'Điểm'});
   const labelIn = el('input',{class:'input', type:'text', placeholder:'Lý do'});
   const addRow = el('div',{class:'adj-add-row'}, valIn, labelIn);
-  const addBtn = el('button',{class:'btn btn-primary btn-sm', style:'width:100%; margin-top:8px'}, '+ Thêm');
+  const addBtn = el('button',{class:'btn btn-primary btn-sm', style:'flex:1'}, '+ Thêm');
+  const cancelBtn = el('button',{class:'btn btn-ghost btn-sm', style:'display:none'}, 'Huỷ');
+  const btnRow = el('div',{style:'display:flex; gap:6px; margin-top:8px'}, addBtn, cancelBtn);
+
+  function updateTotal(){
+    const list = localAdj.filter(a=> a.kind ? a.kind===kind : (isPlus ? a.value>0 : a.value<0));
+    const sum = round1(list.reduce((a,b)=>a+(b.value||0),0));
+    let t = list.length+' lần';
+    if(sum) t += ' · '+(isPlus?'+':'')+sum+'đ';
+    totalBadge.textContent = t;
+  }
+  function exitEditMode(){
+    editingIdx = null;
+    valIn.value=''; labelIn.value='';
+    addBtn.textContent = '+ Thêm';
+    cancelBtn.style.display = 'none';
+  }
+  cancelBtn.addEventListener('click', exitEditMode);
 
   function renderList(){
     listWrap.innerHTML = '';
+    updateTotal();
     const entries = localAdj.map((a,i)=>({...a, _idx:i})).filter(a=> a.kind ? a.kind===kind : (isPlus ? a.value>0 : a.value<0));
     if(!entries.length){ listWrap.appendChild(el('div',{class:'muted', style:'font-size:12px; padding:4px 0'}, 'Chưa có mục nào.')); }
     entries.forEach(a=>{
       const row = el('div',{class:'adj-entry'});
       row.appendChild(el('div',{}, el('strong',{},(a.value>0?'+':'')+a.value), a.label? el('span',{style:'margin-left:6px; color:var(--ink-soft)'}, a.label): null));
-      row.appendChild(el('button',{class:'icon-btn', onclick:()=>{
+      const actions = el('div',{style:'display:flex; gap:2px'});
+      actions.appendChild(el('button',{class:'icon-btn', title:'Sửa', onclick:()=>{
+        editingIdx = a._idx;
+        valIn.value = Math.abs(a.value||0) || '';
+        labelIn.value = a.label || '';
+        addBtn.textContent = '💾 Lưu';
+        cancelBtn.style.display = '';
+        valIn.focus();
+      }}, '✏️'));
+      actions.appendChild(el('button',{class:'icon-btn', title:'Xoá', onclick:()=>{
         localAdj.splice(a._idx,1);
         saveGb(subj.id, stu.id, {adj:localAdj});
+        if(editingIdx===a._idx) exitEditMode();
         renderList();
       }}, '🗑️'));
+      row.appendChild(actions);
       listWrap.appendChild(row);
     });
   }
@@ -1708,15 +1752,20 @@ function openAdjPopover(anchorEl, subj, stu, gbRef, kind){
     }
     const label = labelIn.value.trim();
     if(mag===0 && !label){ toast('Nhập điểm hoặc lý do','rose'); return; }
-    localAdj.push({kind, value: isPlus?mag:-mag, label, date:Date.now()});
+    if(editingIdx!=null){
+      const old = localAdj[editingIdx] || {};
+      localAdj[editingIdx] = {...old, kind, value: isPlus?mag:-mag, label};
+    } else {
+      localAdj.push({kind, value: isPlus?mag:-mag, label, date:Date.now()});
+    }
     saveGb(subj.id, stu.id, {adj:localAdj});
-    valIn.value=''; labelIn.value=''; valIn.focus();
+    exitEditMode();
     renderList();
   });
 
   pop.appendChild(listWrap); pop.appendChild(addRow);
   pop.appendChild(el('div',{class:'muted', style:'font-size:11px; margin:4px 0 2px'}, 'Điểm để trống cũng được, miễn có lý do (hoặc ngược lại).'));
-  pop.appendChild(addBtn);
+  pop.appendChild(btnRow);
   renderList();
   document.body.appendChild(pop);
 
@@ -3305,7 +3354,7 @@ function openClassInviteModal(){
 /* ==========================================================================
    10. GVCN — ĐIỂM DANH
    ========================================================================== */
-const ATT_STATUS = {P:{label:'Đi học đúng giờ', cls:'badge-sage', short:'✓'}, A:{label:'Nghỉ không phép', cls:'badge-rose', short:'KP'}, L:{label:'Đi học muộn', cls:'badge-amber', short:'M'}, E:{label:'Nghỉ có phép', cls:'badge-teal', short:'CP'}};
+const ATT_STATUS = {P:{label:'Đi học đúng giờ', cls:'badge-sage', short:'✓'}, A:{label:'Nghỉ không phép', cls:'badge-rose', short:'KP'}, L:{label:'Đi học muộn không phép', cls:'badge-amber', short:'MKP'}, LE:{label:'Đi học muộn có phép', cls:'badge-teal', short:'MCP'}, E:{label:'Nghỉ có phép', cls:'badge-teal', short:'CP'}};
 // Bản ghi điểm danh mỗi HS có thể là chuỗi trạng thái cũ (tương thích ngược) hoặc {status, note}
 function attStatusOf(raw){ return (raw && typeof raw==='object') ? (raw.status||'P') : (raw||'P'); }
 function attNoteOf(raw){ return (raw && typeof raw==='object') ? (raw.note||'') : ''; }
@@ -3388,7 +3437,7 @@ function viewDiemDanh(main, {isGvcn}){
   // monthly summary
   const monthPrefix = date.slice(0,7);
   const stats = {};
-  State.students.forEach(s=> stats[s.id] = {A:0,L:0,E:0});
+  State.students.forEach(s=> stats[s.id] = {A:0,L:0,LE:0,E:0});
   Object.entries(State.attendance).forEach(([d, doc])=>{
     if(!d.startsWith(monthPrefix)) return;
     Object.entries(doc.records||{}).forEach(([sid,raw])=>{ const st=attStatusOf(raw); if(stats[sid] && st!=='P') stats[sid][st] = (stats[sid][st]||0)+1; });
@@ -3397,9 +3446,9 @@ function viewDiemDanh(main, {isGvcn}){
   const [__sy, __sm] = monthPrefix.split('-');
   sumWrap.appendChild(el('div',{class:'section-title'},'📅 Thống kê tháng '+__sm+' - '+__sy));
   const sumTable = el('table',{class:'data-table', style:'margin-top:8px'});
-  sumTable.appendChild(el('thead',{}, el('tr',{}, el('th',{},'Học sinh'), el('th',{style:'text-align:center'},'Vắng KP'), el('th',{style:'text-align:center'},'Vắng CP'), el('th',{style:'text-align:center'},'Đi muộn'))));
+  sumTable.appendChild(el('thead',{}, el('tr',{}, el('th',{},'Học sinh'), el('th',{style:'text-align:center'},'Vắng KP'), el('th',{style:'text-align:center'},'Vắng CP'), el('th',{style:'text-align:center'},'Muộn KP'), el('th',{style:'text-align:center'},'Muộn CP'))));
   const sumBody = el('tbody');
-  State.students.forEach(s=> sumBody.appendChild(el('tr',{}, el('td',{},s.name), el('td',{style:'text-align:center'},String(stats[s.id].A||0)), el('td',{style:'text-align:center'},String(stats[s.id].E||0)), el('td',{style:'text-align:center'},String(stats[s.id].L||0)))));
+  State.students.forEach(s=> sumBody.appendChild(el('tr',{}, el('td',{},s.name), el('td',{style:'text-align:center'},String(stats[s.id].A||0)), el('td',{style:'text-align:center'},String(stats[s.id].E||0)), el('td',{style:'text-align:center'},String(stats[s.id].L||0)), el('td',{style:'text-align:center'},String(stats[s.id].LE||0)))));
   sumTable.appendChild(sumBody); sumWrap.appendChild(sumTable); main.appendChild(sumWrap);
 }
 function bulkSetAttendance(date, status){
@@ -3482,7 +3531,7 @@ function printStudentAttendanceReport(stu, range){
     const t = new Date(d+'T12:00:00').getTime();
     return t>=range.start && t<=range.end;
   }).sort();
-  const counts = {P:0,A:0,L:0,E:0};
+  const counts = {P:0,A:0,L:0,LE:0,E:0};
   const rowsHtml = days.map(d=>{
     const raw = (State.attendance[d].records||{})[stu.id];
     const st = attStatusOf(raw);
@@ -3496,8 +3545,8 @@ function printStudentAttendanceReport(stu, range){
     <p>Khoảng thời gian: <strong>${escapeHtml(range.human||range.label||'')}</strong> — Ngày in: ${fmtDate(new Date())}</p>
 
     <h3 style="margin-top:18px">📊 Tổng hợp</h3>
-    <table><thead><tr><th>Có mặt</th><th>Vắng không phép</th><th>Vắng có phép</th><th>Đi học muộn</th></tr></thead>
-    <tbody><tr><td>${counts.P||0}</td><td>${counts.A||0}</td><td>${counts.E||0}</td><td>${counts.L||0}</td></tr></tbody></table>
+    <table><thead><tr><th>Có mặt</th><th>Vắng không phép</th><th>Vắng có phép</th><th>Đi học muộn không phép</th><th>Đi học muộn có phép</th></tr></thead>
+    <tbody><tr><td>${counts.P||0}</td><td>${counts.A||0}</td><td>${counts.E||0}</td><td>${counts.L||0}</td><td>${counts.LE||0}</td></tr></tbody></table>
 
     <h3 style="margin-top:18px">📋 Chi tiết theo ngày (${days.length})</h3>
     <table><thead><tr><th style="width:120px">Ngày</th><th style="width:140px">Trạng thái</th><th style="text-align:left">Ghi chú</th></tr></thead><tbody>${rowsHtml}</tbody></table>
@@ -3733,7 +3782,7 @@ function printStudentConductReport(stu, rangeType, refDateStr){
   const commendations = items.filter(it=> it.kind==='commendation');
 
   // Thống kê điểm danh trong khoảng thời gian
-  const att = {A:0,L:0,E:0};
+  const att = {A:0,L:0,LE:0,E:0};
   Object.entries(State.attendance).forEach(([d, doc])=>{
     const t = new Date(d+'T12:00:00').getTime();
     if(t<range.start || t>range.end) return;
@@ -3754,8 +3803,8 @@ function printStudentConductReport(stu, rangeType, refDateStr){
     <p>Khoảng thời gian: <strong>${escapeHtml(range.human||range.label)}</strong> — Ngày in: ${fmtDate(new Date())}</p>
 
     <h3 style="margin-top:18px">📋 Điểm danh</h3>
-    <table><thead><tr><th>Vắng không phép</th><th>Vắng có phép</th><th>Đi học muộn</th></tr></thead>
-    <tbody><tr><td>${att.A||0}</td><td>${att.E||0}</td><td>${att.L||0}</td></tr></tbody></table>
+    <table><thead><tr><th>Vắng không phép</th><th>Vắng có phép</th><th>Đi học muộn không phép</th><th>Đi học muộn có phép</th></tr></thead>
+    <tbody><tr><td>${att.A||0}</td><td>${att.E||0}</td><td>${att.L||0}</td><td>${att.LE||0}</td></tr></tbody></table>
 
     <h3 style="margin-top:18px">⚠️ Vi phạm (${violations.length})</h3>
     <table><thead><tr><th style="width:120px">Ngày</th><th style="text-align:left">Nội dung</th></tr></thead><tbody>${rowsHtml(violations,true)}</tbody></table>
@@ -4020,16 +4069,16 @@ function buildStudentContext(stu, focus){
     lines.push('Ghi nhận vi phạm/tuyên dương gần đây:\n'+myConduct.map(c=> `- ${fmtDate(c.date)} [${c.kind==='violation'?'Vi phạm':'Tuyên dương'}] ${c.category}${c.note?': "'+sanitizeNote(c.note)+'"':''}`).join('\n'));
   }
   const monthPrefix = todayStr().slice(0,7);
-  let absent=0, late=0, excused=0;
+  let absent=0, late=0, lateExcused=0, excused=0;
   const attDetails = [];
   Object.entries(State.attendance).forEach(([d,doc])=>{
     if(!d.startsWith(monthPrefix)) return;
     const raw = (doc.records||{})[stu.id];
     const st = attStatusOf(raw), note = attNoteOf(raw);
-    if(st==='A') absent++; if(st==='L') late++; if(st==='E') excused++;
+    if(st==='A') absent++; if(st==='L') late++; if(st==='LE') lateExcused++; if(st==='E') excused++;
     if(st!=='P') attDetails.push(`${d}: ${ATT_STATUS[st].label}${note?' — "'+sanitizeNote(note)+'"':''}`);
   });
-  lines.push(`Điểm danh tháng này: vắng không phép ${absent} buổi, vắng có phép ${excused} buổi, đi muộn ${late} buổi.`);
+  lines.push(`Điểm danh tháng này: vắng không phép ${absent} buổi, vắng có phép ${excused} buổi, đi muộn không phép ${late} buổi, đi muộn có phép ${lateExcused} buổi.`);
   if(attDetails.length) lines.push('Chi tiết các ngày nghỉ/muộn trong tháng:\n'+attDetails.sort().slice(-12).join('\n'));
   return lines.join('\n\n');
 }
@@ -4282,18 +4331,18 @@ async function extractTextFromRefFile(file){
   throw new Error('Chỉ hỗ trợ file .xlsx, .xls, .csv hoặc .txt');
 }
 function buildPeriodSummary(stu, range){
-  let absent=0, late=0, excused=0; const attDetails=[];
+  let absent=0, late=0, lateExcused=0, excused=0; const attDetails=[];
   Object.entries(State.attendance).forEach(([d,doc])=>{
     const t = new Date(d).getTime();
     if(t<range.start || t>range.end) return;
     const raw = (doc.records||{})[stu.id];
     const st = attStatusOf(raw), note = attNoteOf(raw);
-    if(st==='A') absent++; if(st==='L') late++; if(st==='E') excused++;
+    if(st==='A') absent++; if(st==='L') late++; if(st==='LE') lateExcused++; if(st==='E') excused++;
     if(st!=='P') attDetails.push(`${d}: ${ATT_STATUS[st].label}${note?' — '+note:''}`);
   });
   const violations = State.conduct.filter(c=> c.studentId===stu.id && c.kind==='violation' && c.date>=range.start && c.date<=range.end).sort((a,b)=>a.date-b.date);
   const commendations = State.conduct.filter(c=> c.studentId===stu.id && c.kind==='commendation' && c.date>=range.start && c.date<=range.end).sort((a,b)=>a.date-b.date);
-  return {absent, late, excused, attDetails, violations, commendations};
+  return {absent, late, lateExcused, excused, attDetails, violations, commendations};
 }
 function subjectScoreLines(stu, periodKey){
   const fs = getFinalScoreDoc(stu.id);
@@ -4436,7 +4485,8 @@ function viewHocBa(main, {isGvcn}){
   const sumGrid = el('div', {class:'grid-3', style:'margin-bottom:18px'});
   sumGrid.appendChild(el('div',{class:'card card-pad'}, el('div',{class:'muted', style:'font-size:11.5px'},'Vắng không phép'), el('div',{style:'font-size:22px; font-weight:800'}, String(summary.absent))));
   sumGrid.appendChild(el('div',{class:'card card-pad'}, el('div',{class:'muted', style:'font-size:11.5px'},'Vắng có phép'), el('div',{style:'font-size:22px; font-weight:800'}, String(summary.excused))));
-  sumGrid.appendChild(el('div',{class:'card card-pad'}, el('div',{class:'muted', style:'font-size:11.5px'},'Đi học muộn'), el('div',{style:'font-size:22px; font-weight:800'}, String(summary.late))));
+  sumGrid.appendChild(el('div',{class:'card card-pad'}, el('div',{class:'muted', style:'font-size:11.5px'},'Đi học muộn không phép'), el('div',{style:'font-size:22px; font-weight:800'}, String(summary.late))));
+  sumGrid.appendChild(el('div',{class:'card card-pad'}, el('div',{class:'muted', style:'font-size:11.5px'},'Đi học muộn có phép'), el('div',{style:'font-size:22px; font-weight:800'}, String(summary.lateExcused))));
   main.appendChild(sumGrid);
   const detailGrid = el('div', {class:'grid-2', style:'margin-bottom:20px'});
   const vBox = el('div', {class:'card card-pad'}, el('div',{style:'font-weight:700; margin-bottom:6px'}, `⚠️ Vi phạm (${summary.violations.length})`));
@@ -4464,7 +4514,7 @@ function viewHocBa(main, {isGvcn}){
       lines.push(`Giai đoạn nhận xét: ${periodLabel}`);
       if(scoreLines.length) lines.push('Điểm các môn:\n'+scoreLines.join('\n'));
       if(periodKey!=='month' && (hk[periodKey]||hl[periodKey])) lines.push(`Xếp loại: Hạnh kiểm ${hk[periodKey]||'chưa xếp loại'}, Học lực ${hl[periodKey]||'chưa xếp loại'}.`);
-      lines.push(`Điểm danh: vắng không phép ${summary.absent} buổi, vắng có phép ${summary.excused} buổi, đi muộn ${summary.late} buổi.`);
+      lines.push(`Điểm danh: vắng không phép ${summary.absent} buổi, vắng có phép ${summary.excused} buổi, đi muộn không phép ${summary.late} buổi, đi muộn có phép ${summary.lateExcused} buổi.`);
       if(summary.attDetails.length) lines.push('Chi tiết ngày nghỉ/muộn:\n'+summary.attDetails.join('\n'));
       lines.push(`Vi phạm (${summary.violations.length}):\n`+(summary.violations.length? summary.violations.map(v=>`- ${fmtDate(v.date)} ${v.category}${v.note?': '+v.note:''}`).join('\n') : 'Không có.'));
       lines.push(`Tuyên dương (${summary.commendations.length}):\n`+(summary.commendations.length? summary.commendations.map(c=>`- ${fmtDate(c.date)} ${c.category}${c.note?': '+c.note:''}`).join('\n') : 'Không có.'));
