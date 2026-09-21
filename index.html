@@ -298,6 +298,13 @@ table.data-table{ width:100%; border-collapse:collapse; font-size:13px; }
 .score-popover .adj-add-row{ display:flex; gap:6px; margin-top:8px; }
 .score-popover .adj-add-row input[type=number]{ width:78px; padding:9px 6px; text-align:center; flex:0 0 auto; }
 .score-popover .adj-add-row input[type=text]{ flex:1; min-width:0; }
+/* Bảng nhỏ Vi phạm / Tuyên dương (GVCN): ngày + lý do */
+.score-popover.cpop{ width:300px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow-y:auto; }
+.score-popover.cpop .adj-list{ max-height:210px; overflow-y:auto; }
+.score-popover.cpop .adj-entry{ align-items:flex-start; }
+.score-popover.cpop .cpop-row{ display:flex; align-items:center; gap:8px; margin-top:8px; }
+.score-popover.cpop .cpop-row > span{ width:40px; flex:0 0 auto; font-size:12px; font-weight:700; color:var(--ink-soft); }
+.score-popover.cpop .cpop-row .input{ flex:1; min-width:0; }
 
 .empty-state{
   display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -1399,6 +1406,7 @@ function renderMain(){
   const main = $('#main-content');
   main.innerHTML = '';
   closeAdjPopover();
+  if(State.nav!=='hanh-kiem') closeConductPopover();
   if(!State.klass){ renderNoClassState(); return; }
   const isGvcn = State.klass.gvcnUid === State.user.uid;
   const fn = VIEWS[State.nav];
@@ -3609,36 +3617,64 @@ function printStudentAttendanceReport(stu, range){
 /* ==========================================================================
    11. GVCN — VI PHẠM / TUYÊN DƯƠNG
    ========================================================================== */
-const CONDUCT_CATS = {
-  violation: ['Không làm bài tập','Nói chuyện riêng','Đi học muộn','Vi phạm đồng phục','Sử dụng điện thoại','Khác'],
-  commendation: ['Tích cực phát biểu','Giúp đỡ bạn','Hoàn thành tốt nhiệm vụ','Gương người tốt việc tốt','Tiến bộ vượt bậc','Khác'],
+const CONDUCT_META = {
+  violation:    {icon:'⚠️', title:'Vi phạm',     badge:'badge-rose'},
+  commendation: {icon:'🌟', title:'Tuyên dương', badge:'badge-sage'},
 };
+// Ghi nhận theo SỐ LẦN: bấm vào "N lần" để mở bảng nhỏ xem / thêm / sửa / xoá từng lần
+// (mỗi lần chỉ gồm NGÀY + LÝ DO). Dữ liệu này ĐỘC LẬP với điểm cộng/trừ của GVBM
+// (collection gradebook) — không đọc, không đồng bộ lỗi từ bên đó sang.
+// Dữ liệu cũ có "loại" (category) + ghi chú (note); dữ liệu mới lưu lý do vào note, category='Khác'.
+function conductReason(item){
+  const cat = String(item.category||'').trim();
+  const note = String(item.note||'').trim();
+  if(!cat || cat==='Khác') return note || cat;
+  return note ? cat+' — '+note : cat;
+}
+const conductCountText = n => n ? n+' lần' : '0';
+function conductItemsOf(studentId, kind){
+  return State.conduct.filter(c=> c.studentId===studentId && c.kind===kind)
+    .sort((a,b)=> (b.date-a.date) || ((b.createdAt||0)-(a.createdAt||0)));
+}
+function saveConduct({id, studentId, kind, dateStr, reason}){
+  const col = db.collection('classes').doc(State.classId).collection('conduct');
+  const ts = new Date(dateStr+'T12:00:00').getTime();
+  const req = id
+    ? col.doc(id).update({category:'Khác', note:reason, date:ts})
+    : col.add({studentId, kind, category:'Khác', note:reason, date:ts, teacherUid:State.user.uid, createdAt:Date.now()});
+  return req.catch(e=> toast('Lỗi lưu: '+e.message, 'rose'));
+}
+
 function viewHanhKiem(main, {isGvcn}){
   pageHeader(main, 'Vi phạm / Tuyên dương', `Lớp ${State.klass.name}`, isGvcn ? [
     el('button',{class:'btn btn-rose btn-sm', onclick:()=>openConductModal('violation')}, '⚠️ Ghi vi phạm'),
     el('button',{class:'btn btn-sage btn-sm', onclick:()=>openConductModal('commendation')}, '🌟 Ghi tuyên dương'),
   ] : []);
 
+  if(_cpop && (_cpop.classId!==State.classId || _cpop.readOnly===isGvcn)) closeConductPopover();
+
   // per-student stats
   const stats = {};
   State.students.forEach(s=> stats[s.id]={v:0,c:0});
   State.conduct.forEach(item=>{ if(stats[item.studentId]) stats[item.studentId][item.kind==='violation'?'v':'c']++; });
+  // Giữ nguyên thứ tự danh sách lớp — không sắp xếp lại theo số lần vi phạm/tuyên dương.
+  const rows = State.students;
+
   const statGrid = el('div', {class:'card', style:'overflow-x:auto; margin-bottom:18px'});
   const st = el('table',{class:'data-table'});
   st.appendChild(el('thead',{}, el('tr',{}, el('th',{},'Học sinh'), el('th',{style:'text-align:center'},'Vi phạm'), el('th',{style:'text-align:center'},'Tuyên dương'), isGvcn?el('th',{style:'text-align:center'},'Báo PH'):null, el('th',{style:'text-align:center'},'Báo cáo'))));
   const stb = el('tbody');
-  State.students.slice().sort((a,b)=> stats[b.id].v - stats[a.id].v).forEach(s=>{
-    const vCell = el('td',{style:'text-align:center'}, el('div',{style:'display:flex; align-items:center; justify-content:center; gap:5px'},
-      isGvcn? el('button',{class:'icon-btn', title:'Sửa / xoá vi phạm', disabled: stats[s.id].v===0?true:null, style: stats[s.id].v===0?'opacity:.35':'', onclick:()=> openConductDeleteModal(s.id,'violation')}, '−') : null,
-      el('span',{class:'badge badge-rose'}, String(stats[s.id].v)),
-      isGvcn? el('button',{class:'icon-btn', title:'Thêm vi phạm', onclick:()=> openConductModal('violation', s.id)}, '+') : null));
-    const cCell = el('td',{style:'text-align:center'}, el('div',{style:'display:flex; align-items:center; justify-content:center; gap:5px'},
-      isGvcn? el('button',{class:'icon-btn', title:'Sửa / xoá tuyên dương', disabled: stats[s.id].c===0?true:null, style: stats[s.id].c===0?'opacity:.35':'', onclick:()=> openConductDeleteModal(s.id,'commendation')}, '−') : null,
-      el('span',{class:'badge badge-sage'}, String(stats[s.id].c)),
-      isGvcn? el('button',{class:'icon-btn', title:'Thêm tuyên dương', onclick:()=> openConductModal('commendation', s.id)}, '+') : null));
+  rows.forEach(s=>{
+    const countCell = (kind, n)=>{
+      const btn = el('button',{class:'adj-badge-btn', 'data-cp': s.id+':'+kind, style:'padding:6px 4px',
+        title: isGvcn ? 'Bấm để xem / thêm / sửa / xoá' : 'Bấm để xem chi tiết'},
+        el('span',{class:'badge '+CONDUCT_META[kind].badge}, conductCountText(n)));
+      btn.addEventListener('click', (e)=>{ e.stopPropagation(); toggleConductPopover(s.id, kind, !isGvcn); });
+      return el('td',{style:'text-align:center'}, btn);
+    };
     const notifyCell = isGvcn ? el('td',{style:'text-align:center'}, el('button',{class:'icon-btn', title:'Soạn tin nhắn báo phụ huynh', onclick:()=> openNotifyPickerModal(s)}, '💬')) : null;
     const reportCell = el('td',{style:'text-align:center'}, el('button',{class:'icon-btn', title:'Xuất báo cáo nề nếp (PDF)', onclick:()=> openStudentConductReportModal(s)}, '📄'));
-    stb.appendChild(el('tr',{}, el('td',{}, el('strong',{},s.name)), vCell, cCell, notifyCell, reportCell));
+    stb.appendChild(el('tr',{}, el('td',{}, el('strong',{},s.name)), countCell('violation', stats[s.id].v), countCell('commendation', stats[s.id].c), notifyCell, reportCell));
   });
   st.appendChild(stb); statGrid.appendChild(st); main.appendChild(statGrid);
 
@@ -3648,87 +3684,156 @@ function viewHanhKiem(main, {isGvcn}){
     el('button',{class:'btn btn-ghost btn-sm', onclick:()=> exportConductRange('semester')}, '⬇️ Xuất theo kì'));
   main.appendChild(exportBar);
 
-  main.appendChild(el('div', {class:'section-title', style:'margin-bottom:10px'}, 'Nhật ký gần đây'));
-  const timeline = el('div', {style:'display:flex; flex-direction:column; gap:8px'});
-  State.conduct.slice(0,60).forEach(item=>{
-    const stu = State.students.find(s=>s.id===item.studentId);
-    const isV = item.kind==='violation';
-    timeline.appendChild(el('div', {class:'card card-pad', style:'display:flex; justify-content:space-between; align-items:flex-start; gap:10px'},
-      el('div',{}, 
-        el('span',{class:'badge '+(isV?'badge-rose':'badge-sage')}, (isV?'⚠️ ':'🌟 ')+(item.category||'')),
-        el('div',{style:'font-weight:700; margin-top:6px'}, stu?stu.name:'(đã xoá)'),
-        item.note? el('div',{class:'muted', style:'font-size:12.5px; margin-top:2px'}, item.note) : null,
-        el('div',{class:'muted', style:'font-size:11px; margin-top:4px'}, fmtDate(item.date))
-      ),
-      isGvcn? el('div',{style:'display:flex; gap:4px'},
-        stu? el('button',{class:'icon-btn', title:'Soạn tin nhắn báo phụ huynh', onclick:()=> openAiCommentModal(stu, {focus:{type:'conduct', item}})}, '💬') : null,
-        stu? el('button',{class:'icon-btn', title:'Sửa', onclick:()=> openConductModal(item.kind, item.studentId, item)}, '✏️') : null,
-        el('button',{class:'icon-btn', title:'Xoá', onclick:()=>{ if(confirm('Xoá mục này?')) db.collection('classes').doc(State.classId).collection('conduct').doc(item.id).delete(); }}, '🗑️')
-      ) : null
-    ));
-  });
-  if(!State.conduct.length) timeline.appendChild(el('div',{class:'empty-state'}, 'Chưa có ghi nhận nào.'));
-  main.appendChild(timeline);
+  syncConductPopover();
 }
-function openConductModal(kind, studentId, editItem){
-  const isEdit = !!editItem;
-  const wrap = el('div', {});
-  wrap.appendChild(modalHeader(isEdit ? (kind==='violation'?'Sửa vi phạm':'Sửa tuyên dương') : (kind==='violation'?'Ghi nhận vi phạm':'Ghi nhận tuyên dương')));
-  const stuSel = el('select', {class:'input'});
-  State.students.forEach(s=> stuSel.appendChild(el('option',{value:s.id, selected: s.id===studentId?'':null}, s.name)));
-  if(studentId) stuSel.value = studentId;
-  if(isEdit) stuSel.disabled = true;
-  const catSel = el('select', {class:'input'});
-  CONDUCT_CATS[kind].forEach(c=> catSel.appendChild(el('option',{value:c}, c)));
-  if(isEdit) catSel.value = editItem.category;
-  const noteIn = el('textarea',{class:'input', rows:2, placeholder:'Chi tiết thêm (tuỳ chọn)'}, isEdit ? (editItem.note||'') : '');
-  const dateIn = el('input',{class:'input', type:'date', value: isEdit ? new Date(editItem.date).toISOString().slice(0,10) : todayStr()});
-  wrap.appendChild(el('div',{class:'field'}, el('label',{class:'field-label'},'Học sinh'), stuSel));
-  wrap.appendChild(el('div',{class:'grid-2'},
-    el('div',{class:'field'}, el('label',{class:'field-label'},'Loại'), catSel),
-    el('div',{class:'field'}, el('label',{class:'field-label'},'Ngày'), dateIn)));
-  wrap.appendChild(el('div',{class:'field'}, el('label',{class:'field-label'},'Ghi chú'), noteIn));
-  wrap.appendChild(el('button',{class:'btn '+(kind==='violation'?'btn-rose':'btn-sage'), style:'width:100%', onclick: async ()=>{
-    if(isEdit){
-      await db.collection('classes').doc(State.classId).collection('conduct').doc(editItem.id).update({
-        category: catSel.value, note: noteIn.value.trim(), date: new Date(dateIn.value).getTime()||editItem.date
-      });
-      toast('Đã lưu thay đổi', 'sage'); closeModal();
-    } else {
-      await db.collection('classes').doc(State.classId).collection('conduct').add({
-        studentId: stuSel.value, kind, category: catSel.value, note: noteIn.value.trim(),
-        date: new Date(dateIn.value).getTime()||Date.now(), teacherUid: State.user.uid, createdAt: Date.now()
-      });
-      toast('Đã ghi nhận', 'sage'); closeModal();
+
+/* ---- Bảng nhỏ (popover) xem / thêm / sửa / xoá từng lần ---- */
+let _cpop = null;
+function conductAnchorOf(key){
+  return Array.from(document.querySelectorAll('[data-cp]')).find(b=> b.getAttribute('data-cp')===key) || null;
+}
+function positionConductPopover(){
+  const p = _cpop; if(!p) return;
+  const anchor = conductAnchorOf(p.key); if(!anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const pop = p.el;
+  const popW = pop.offsetWidth || 300;
+  pop.style.left = Math.min(Math.max(8, r.left), window.innerWidth - popW - 8) + 'px';
+  const ph = pop.offsetHeight;
+  let top = r.bottom + 6;
+  if(top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+  pop.style.top = top + 'px';
+}
+function closeConductPopover(){
+  const p = _cpop; if(!p) return;
+  _cpop = null;
+  p.el.remove();
+  document.removeEventListener('click', p.onOutside, true);
+  document.removeEventListener('keydown', p.onKey, true);
+  window.removeEventListener('scroll', p.onMove, true);
+}
+function syncConductPopover(){
+  const p = _cpop; if(!p) return;
+  if(!State.students.find(s=> s.id===p.studentId)){ closeConductPopover(); return; }
+  refreshConductPopover();
+}
+function refreshConductPopover(){
+  const p = _cpop; if(!p) return;
+  const items = conductItemsOf(p.studentId, p.kind);
+  p.totalBadge.textContent = conductCountText(items.length);
+  p.list.innerHTML = '';
+  if(!items.length) p.list.appendChild(el('div',{class:'muted', style:'font-size:12px; padding:4px 0'}, 'Chưa có lần nào.'));
+  items.forEach(item=>{
+    const editing = item.id===p.editingId;
+    const row = el('div',{class:'adj-entry', style: editing ? 'background:var(--amber-tint); border-radius:8px; padding-left:6px; padding-right:6px' : null});
+    row.appendChild(el('div',{style:'min-width:0; flex:1'},
+      el('strong',{}, fmtDate(item.date)),
+      el('div',{style:'color:var(--ink-soft); margin-top:1px; white-space:pre-wrap; word-break:break-word'}, conductReason(item) || '—')));
+    if(!p.readOnly){
+      row.appendChild(el('div',{style:'display:flex; gap:2px; flex-shrink:0'},
+        el('button',{class:'icon-btn', title:'Sửa', onclick:()=>{
+          p.editingId = item.id;
+          p.dateIn.value = isoOfLocalDate(new Date(item.date));
+          p.reasonIn.value = conductReason(item);
+          p.addBtn.textContent = '💾 Lưu';
+          p.cancelBtn.style.display = '';
+          refreshConductPopover();
+          p.reasonIn.focus();
+        }}, '✏️'),
+        el('button',{class:'icon-btn', title:'Xoá', onclick:()=>{
+          if(!confirm('Xoá lần này?')) return;
+          if(p.editingId===item.id) resetConductForm(p, {keepDate:false});
+          db.collection('classes').doc(State.classId).collection('conduct').doc(item.id).delete()
+            .catch(e=> toast('Lỗi xoá: '+e.message, 'rose'));
+        }}, '🗑️')));
     }
-  }}, isEdit ? '💾 Lưu thay đổi' : (kind==='violation'?'Lưu vi phạm':'Lưu tuyên dương')));
-  openModal(wrap);
+    p.list.appendChild(row);
+  });
+  positionConductPopover();
 }
-function openConductDeleteModal(studentId, kind){
-  const stu = State.students.find(s=>s.id===studentId);
-  const wrap = el('div', {});
-  wrap.appendChild(modalHeader((kind==='violation'?'Sửa / Xoá vi phạm — ':'Sửa / Xoá tuyên dương — ')+(stu?stu.name:'')));
-  const list = el('div',{style:'display:flex; flex-direction:column; gap:8px'});
-  wrap.appendChild(list);
-  const removedIds = new Set();
-  function render(){
-    list.innerHTML = '';
-    const items = State.conduct.filter(c=> c.studentId===studentId && c.kind===kind && !removedIds.has(c.id)).sort((a,b)=> b.date-a.date);
-    if(!items.length){ list.appendChild(el('p',{class:'muted'},'Không còn ghi nhận nào.')); return; }
-    items.forEach(item=>{
-      list.appendChild(el('div',{class:'card card-pad', style:'display:flex; justify-content:space-between; align-items:center; gap:10px'},
-        el('div',{}, el('div',{style:'font-weight:700'}, item.category||''), item.note?el('div',{class:'muted', style:'font-size:12px; margin-top:2px; white-space:pre-wrap'}, item.note):null, el('div',{class:'muted', style:'font-size:11px; margin-top:2px'}, fmtDate(item.date))),
-        el('div',{style:'display:flex; gap:4px; flex-shrink:0'},
-          el('button',{class:'icon-btn', title:'Sửa', onclick: ()=>{ closeModal(); openConductModal(kind, studentId, item); }}, '✏️'),
-          el('button',{class:'icon-btn', title:'Xoá', onclick: async ()=>{
-            removedIds.add(item.id); render();
-            await db.collection('classes').doc(State.classId).collection('conduct').doc(item.id).delete();
-            toast('Đã xoá', 'sage');
-          }}, '🗑️'))
-      ));
-    });
+function resetConductForm(p, {keepDate}){
+  p.editingId = null;
+  p.reasonIn.value = '';
+  if(!keepDate) p.dateIn.value = isoOfLocalDate(new Date());
+  p.addBtn.textContent = '+ Thêm';
+  p.cancelBtn.style.display = 'none';
+}
+function toggleConductPopover(studentId, kind, readOnly){
+  if(_cpop && _cpop.key===studentId+':'+kind){ closeConductPopover(); return; }
+  openConductPopover(studentId, kind, readOnly);
+}
+function openConductPopover(studentId, kind, readOnly){
+  const stu = State.students.find(s=> s.id===studentId); if(!stu) return;
+  const meta = CONDUCT_META[kind];
+  if(_cpop) closeConductPopover();
+  closeAdjPopover();
+
+  const p = {key: studentId+':'+kind, studentId, kind, readOnly:!!readOnly, classId:State.classId, editingId:null};
+  const pop = el('div',{class:'score-popover cpop'});
+  p.el = pop;
+  p.totalBadge = el('span',{class:'badge '+meta.badge});
+  pop.appendChild(el('div',{style:'display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px'},
+    el('div',{style:'font-weight:700; font-size:12.5px; min-width:0'}, `${meta.icon} ${meta.title} — ${stu.name}`), p.totalBadge));
+  p.list = el('div',{class:'adj-list'});
+  pop.appendChild(p.list);
+
+  if(!p.readOnly){
+    p.dateIn = el('input',{class:'input', type:'date', value: isoOfLocalDate(new Date())});
+    p.reasonIn = el('input',{class:'input', type:'text', placeholder:'Lý do'});
+    p.addBtn = el('button',{class:'btn btn-primary btn-sm', style:'flex:1'}, '+ Thêm');
+    p.cancelBtn = el('button',{class:'btn btn-ghost btn-sm', style:'display:none'}, 'Huỷ');
+    const submit = ()=>{
+      const reason = p.reasonIn.value.trim();
+      if(!p.dateIn.value){ toast('Chọn ngày','rose'); return; }
+      if(!reason){ toast('Nhập lý do','rose'); p.reasonIn.focus(); return; }
+      saveConduct({id:p.editingId, studentId, kind, dateStr:p.dateIn.value, reason});
+      resetConductForm(p, {keepDate:true});
+      refreshConductPopover();
+    };
+    p.addBtn.addEventListener('click', submit);
+    p.reasonIn.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); } });
+    p.cancelBtn.addEventListener('click', ()=>{ resetConductForm(p, {keepDate:false}); refreshConductPopover(); });
+    pop.appendChild(el('div',{class:'cpop-row'}, el('span',{},'Ngày'), p.dateIn));
+    pop.appendChild(el('div',{class:'cpop-row'}, el('span',{},'Lý do'), p.reasonIn));
+    pop.appendChild(el('div',{style:'display:flex; gap:6px; margin-top:10px'}, p.addBtn, p.cancelBtn));
   }
-  render();
+
+  p.onOutside = (e)=>{
+    if(pop.contains(e.target)) return;
+    if(e.target.closest && e.target.closest('[data-cp]')) return; // để nút "N lần" tự xử lý (mở / đóng / chuyển)
+    closeConductPopover();
+  };
+  p.onKey = (e)=>{ if(e.key==='Escape') closeConductPopover(); };
+  p.onMove = ()=> positionConductPopover();
+  document.addEventListener('click', p.onOutside, true);
+  document.addEventListener('keydown', p.onKey, true);
+  window.addEventListener('scroll', p.onMove, true);
+
+  _cpop = p;
+  document.body.appendChild(pop);
+  refreshConductPopover();
+}
+
+// Ghi nhanh từ hai nút trên đầu trang: chọn học sinh + ngày + lý do.
+function openConductModal(kind, studentId){
+  const wrap = el('div', {});
+  wrap.appendChild(modalHeader(kind==='violation'?'Ghi nhận vi phạm':'Ghi nhận tuyên dương'));
+  const stuSel = el('select', {class:'input'});
+  State.students.forEach(s=> stuSel.appendChild(el('option',{value:s.id}, s.name)));
+  if(studentId) stuSel.value = studentId;
+  const dateIn = el('input',{class:'input', type:'date', value: isoOfLocalDate(new Date())});
+  const reasonIn = el('textarea',{class:'input', rows:2, placeholder:'Lý do'});
+  wrap.appendChild(el('div',{class:'field'}, el('label',{class:'field-label'},'Học sinh'), stuSel));
+  wrap.appendChild(el('div',{class:'field'}, el('label',{class:'field-label'},'Ngày'), dateIn));
+  wrap.appendChild(el('div',{class:'field'}, el('label',{class:'field-label'},'Lý do'), reasonIn));
+  wrap.appendChild(el('button',{class:'btn '+(kind==='violation'?'btn-rose':'btn-sage'), style:'width:100%', onclick:()=>{
+    const reason = reasonIn.value.trim();
+    if(!stuSel.value){ toast('Chọn học sinh','rose'); return; }
+    if(!dateIn.value){ toast('Chọn ngày','rose'); return; }
+    if(!reason){ toast('Nhập lý do','rose'); return; }
+    saveConduct({studentId: stuSel.value, kind, dateStr: dateIn.value, reason});
+    toast('Đã ghi nhận', 'sage'); closeModal();
+  }}, kind==='violation'?'Lưu vi phạm':'Lưu tuyên dương'));
   openModal(wrap);
 }
 function openNotifyPickerModal(stu){
@@ -3741,8 +3846,8 @@ function openNotifyPickerModal(stu){
   items.forEach(item=>{
     const isV = item.kind==='violation';
     list.appendChild(el('button',{class:'card card-pad', style:'text-align:left; cursor:pointer; border:1px solid var(--line); background:none; width:100%', onclick:()=>{ closeModal(); openAiCommentModal(stu, {focus:{type:'conduct', item}}); }},
-      el('span',{class:'badge '+(isV?'badge-rose':'badge-sage')}, (isV?'⚠️ ':'🌟 ')+(item.category||'')),
-      el('div',{style:'font-size:12px; margin-top:4px'}, fmtDate(item.date) + (item.note?' — '+item.note:''))
+      el('span',{class:'badge '+(isV?'badge-rose':'badge-sage')}, isV?'⚠️ Vi phạm':'🌟 Tuyên dương'),
+      el('div',{style:'font-size:12px; margin-top:4px'}, fmtDate(item.date) + (conductReason(item)?' — '+conductReason(item):''))
     ));
   });
   wrap.appendChild(list);
@@ -3786,7 +3891,7 @@ function exportConductRange(rangeType){
   const rows = [['Học sinh','Vi phạm (lý do)','Tuyên dương (lý do)','Ngày']];
   items.slice().sort((a,b)=> a.date-b.date).forEach(item=>{
     const stu = State.students.find(s=>s.id===item.studentId);
-    const reason = (item.category||'') + (item.note ? ' — '+item.note : '');
+    const reason = conductReason(item);
     rows.push([
       stu?stu.name:'(đã xoá)',
       item.kind==='violation' ? reason : '',
@@ -3844,7 +3949,7 @@ function printStudentConductReport(stu, rangeType, refDateStr){
   });
 
   const rowsHtml = (list, isV)=> list.map(item=>{
-    const reason = (item.category||'') + (item.note ? ' — '+escapeHtml(item.note) : '');
+    const reason = escapeHtml(conductReason(item));
     return `<tr><td>${fmtDate(item.date)}</td><td style="text-align:left">${reason}</td></tr>`;
   }).join('') || `<tr><td colspan="2" style="color:#888">Không có ghi nhận nào trong khoảng thời gian này</td></tr>`;
 
@@ -4106,8 +4211,8 @@ function buildStudentContext(stu, focus){
   }
   if(focus && focus.type==='conduct'){
     const it = focus.item;
-    const n = sanitizeNote(it.note);
-    lines.push(`SỰ KIỆN CẦN THÔNG BÁO: ${it.kind==='violation'?'Vi phạm':'Tuyên dương'} ngày ${fmtDate(it.date)} — ${it.category}${n?`: "${n}"`:''}.`);
+    const n = sanitizeNote(conductReason(it));
+    lines.push(`SỰ KIỆN CẦN THÔNG BÁO: ${it.kind==='violation'?'Vi phạm':'Tuyên dương'} ngày ${fmtDate(it.date)}${n?` — lý do: "${n}"`:''}.`);
   }
   const subjLines = State.subjects.map(subj=>{
     const gb = State.gradebook[gbKey(subj.id, stu.id)];
@@ -4117,7 +4222,7 @@ function buildStudentContext(stu, focus){
   if(subjLines.length) lines.push('Điểm các môn:\n'+subjLines.join('\n'));
   const myConduct = State.conduct.filter(c=>c.studentId===stu.id).slice(0,8);
   if(myConduct.length){
-    lines.push('Ghi nhận vi phạm/tuyên dương gần đây:\n'+myConduct.map(c=> `- ${fmtDate(c.date)} [${c.kind==='violation'?'Vi phạm':'Tuyên dương'}] ${c.category}${c.note?': "'+sanitizeNote(c.note)+'"':''}`).join('\n'));
+    lines.push('Ghi nhận vi phạm/tuyên dương gần đây:\n'+myConduct.map(c=> `- ${fmtDate(c.date)} [${c.kind==='violation'?'Vi phạm':'Tuyên dương'}] ${sanitizeNote(conductReason(c))}`).join('\n'));
   }
   const monthPrefix = todayStr().slice(0,7);
   let absent=0, late=0, excused=0;
@@ -4540,10 +4645,10 @@ function viewHocBa(main, {isGvcn}){
   main.appendChild(sumGrid);
   const detailGrid = el('div', {class:'grid-2', style:'margin-bottom:20px'});
   const vBox = el('div', {class:'card card-pad'}, el('div',{style:'font-weight:700; margin-bottom:6px'}, `⚠️ Vi phạm (${summary.violations.length})`));
-  if(summary.violations.length) summary.violations.forEach(v=> vBox.appendChild(el('div',{class:'muted', style:'font-size:12.5px; margin-top:3px'}, `${fmtDate(v.date)} — ${v.category}${v.note?': '+v.note:''}`)));
+  if(summary.violations.length) summary.violations.forEach(v=> vBox.appendChild(el('div',{class:'muted', style:'font-size:12.5px; margin-top:3px'}, `${fmtDate(v.date)} — ${conductReason(v)}`)));
   else vBox.appendChild(el('div',{class:'muted', style:'font-size:12.5px'},'Không có ghi nhận.'));
   const cBox = el('div', {class:'card card-pad'}, el('div',{style:'font-weight:700; margin-bottom:6px'}, `🌟 Tuyên dương (${summary.commendations.length})`));
-  if(summary.commendations.length) summary.commendations.forEach(c=> cBox.appendChild(el('div',{class:'muted', style:'font-size:12.5px; margin-top:3px'}, `${fmtDate(c.date)} — ${c.category}${c.note?': '+c.note:''}`)));
+  if(summary.commendations.length) summary.commendations.forEach(c=> cBox.appendChild(el('div',{class:'muted', style:'font-size:12.5px; margin-top:3px'}, `${fmtDate(c.date)} — ${conductReason(c)}`)));
   else cBox.appendChild(el('div',{class:'muted', style:'font-size:12.5px'},'Không có ghi nhận.'));
   detailGrid.appendChild(vBox); detailGrid.appendChild(cBox); main.appendChild(detailGrid);
 
@@ -4566,8 +4671,8 @@ function viewHocBa(main, {isGvcn}){
       if(periodKey!=='month' && (hk[periodKey]||hl[periodKey])) lines.push(`Xếp loại: Hạnh kiểm ${hk[periodKey]||'chưa xếp loại'}, Học lực ${hl[periodKey]||'chưa xếp loại'}.`);
       lines.push(`Điểm danh: vắng không phép ${summary.absent} buổi, vắng có phép ${summary.excused} buổi, đi muộn ${summary.late} buổi.`);
       if(summary.attDetails.length) lines.push('Chi tiết ngày nghỉ/muộn:\n'+summary.attDetails.join('\n'));
-      lines.push(`Vi phạm (${summary.violations.length}):\n`+(summary.violations.length? summary.violations.map(v=>`- ${fmtDate(v.date)} ${v.category}${v.note?': '+v.note:''}`).join('\n') : 'Không có.'));
-      lines.push(`Tuyên dương (${summary.commendations.length}):\n`+(summary.commendations.length? summary.commendations.map(c=>`- ${fmtDate(c.date)} ${c.category}${c.note?': '+c.note:''}`).join('\n') : 'Không có.'));
+      lines.push(`Vi phạm (${summary.violations.length}):\n`+(summary.violations.length? summary.violations.map(v=>`- ${fmtDate(v.date)} ${conductReason(v)}`).join('\n') : 'Không có.'));
+      lines.push(`Tuyên dương (${summary.commendations.length}):\n`+(summary.commendations.length? summary.commendations.map(c=>`- ${fmtDate(c.date)} ${conductReason(c)}`).join('\n') : 'Không có.'));
       const ctx = lines.join('\n\n');
       const instruction = `Viết nhận xét nề nếp và học tập cho học sinh trong giai đoạn "${periodLabel}", dùng làm căn cứ để giáo viên chủ nhiệm ghi nhận xét học bạ. Bắt buộc viết theo đúng mẫu, bắt đầu bằng "Con ${stu.name} ...". Nội dung gồm 2 phần rõ ràng: (1) Về học tập — nêu cụ thể ưu điểm, hạn chế dựa trên điểm số các môn; (2) Về nề nếp/rèn luyện — nêu cụ thể ưu điểm, hạn chế dựa trên điểm danh và vi phạm/tuyên dương. Kết thúc bằng định hướng, mục tiêu cần cố gắng cho giai đoạn tiếp theo. Viết khách quan, cụ thể, đúng thực tế dữ liệu cung cấp, không chung chung, không bịa thêm thông tin không có trong dữ liệu, không dùng markdown, độ dài khoảng 100-160 từ.`;
       let prompt = `Bạn là trợ lý cho giáo viên chủ nhiệm tại Việt Nam. Dựa trên dữ liệu sau, ${instruction}\n\nDữ liệu:\n${ctx}`;
